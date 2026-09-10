@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Env & secrets
+.env
+*.key
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test & build output
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
