@@ -11,7 +11,9 @@ from .quota.manual import ManualQuotaProbe
 from .quota.mock import MockQuotaProbe
 from .report import write_report
 from .runner import Runner
+from .status import run_status
 from .task import list_tasks, load_task
+from .watch import run_watch
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +36,21 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--last", type=int)
     report.add_argument("--price", type=float)
     report.add_argument("--quota-tokens", type=float)
+    watch = sub.add_parser("watch", help="持续监测采样：meter 增量 + 额度探针快照写入账本")
+    watch.add_argument("--agent", required=True,
+                       help="agent 名，取 [agents.*] 的 meter/log_path（mock 用内置合成日志）")
+    watch.add_argument("--probe", required=True, choices=["mock", "arkcli", "manual"],
+                       help="额度探针")
+    watch.add_argument("--once", action="store_true", help="只采样一次即退出（适合 cron）")
+    watch.add_argument("--interval", type=float,
+                       help="循环采样间隔秒数（默认取 [watch].interval_sec）")
+    watch.add_argument("--ledger", help="账本 JSONL 路径（默认 state/ledger.jsonl）")
+    status = sub.add_parser("status", help="持续监测状态：读账本输出各池 当前%/Q 估计/速率/ETA")
+    status.add_argument("--ledger", help="账本 JSONL 路径（默认取 [watch].ledger）")
+    status.add_argument("--window-hours", dest="window_hours", type=float,
+                        help="消耗速率窗口小时数（默认 24，右端=该池最新样本）")
+    status.add_argument("--clean-only", dest="clean_only", action="store_true",
+                        help="只用 clean 样本估计与计速率，排除未观测渠道污染")
     return parser
 
 
@@ -90,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "watch":
+            return run_watch(args.agent, args.probe, once=args.once,
+                             interval=args.interval, ledger=args.ledger)
+        if args.command == "status":
+            return run_status(ledger=args.ledger, window_hours=args.window_hours,
+                              clean_only=args.clean_only)
         return 2
     except FileNotFoundError as exc:
         print(f"错误：{exc}", file=sys.stderr)

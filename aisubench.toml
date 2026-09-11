@@ -16,6 +16,30 @@ command = ["python3", "-m", "aisubench", "api-agent"]
 [subscriptions.demo]
 price = 30.0
 window = "5h"
+# 示例：池结构声明——该订阅的额度池（账本样本 pools 字段的键，见 ledger.py）。
+# 评测真实订阅时请按额度页实际窗口改这里（合成示例，非真实结构）。
+pools = ["5h", "week"]
+
+# watch 持续监测的采样参数（账本契约与 clean 口径见 aisubench/watch.py、aisubench/ledger.py）。
+[watch]
+# 距上一个样本的间隔小于该秒数时，样本记 clean=true（无法排除外部渠道消耗则不可信）。
+clean_window_sec = 600
+# 未传 --interval 时的循环采样间隔（秒）。
+interval_sec = 300
+# 账本与 meter 字节偏移的持久化路径（相对仓库根；state/ 已被 git 忽略）。
+ledger = "state/ledger.jsonl"
+offsets_file = "state/meter_offsets.json"
+
+# watch 的 meter 配置示例：meter = "kimi"（解析 wire.jsonl）或 "claude"（解析会话 jsonl）。
+# 路径请换成本机真实日志文件后再取消注释——以下是占位示例，默认配置不指向不存在的路径。
+# [agents.kimi]
+# meter = "kimi"
+# log_path = "/home/YOU/.kimi-code/sessions/YOUR-SESSION/wire.jsonl"
+# [agents.claude]
+# meter = "claude"
+# log_path = "/home/YOU/.claude/projects/YOUR-PROJECT/YOUR-SESSION.jsonl"
+# 说明：`watch --agent mock` 为冒烟特判，自动使用合成演示日志 state/mock_wire.jsonl
+# （首次采样生成），无需真实 agent 日志。
 
 [calibration]
 # 标定百分比显示粒度：额度页最小可分辨的已用百分比刻度。

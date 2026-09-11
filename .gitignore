@@ -27,3 +27,6 @@ dist/
 build/
 runs/
 reports/
+
+# 持续监测本地状态（账本 / meter 偏移 / mock 合成日志）
+state/

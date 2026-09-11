@@ -12,9 +12,13 @@ python3 -m aisubench batch --tier calibration --agent mock
 python3 -m aisubench batch --tier light --agent mock
 python3 -m aisubench calibrate --plan demo --probe mock
 python3 -m aisubench report
+python3 -m aisubench watch --agent mock --probe mock --once
+python3 -m aisubench status
 ```
 
 mock agent 完全离线、确定性地产生任务产物和假 usage，可用于验证完整链路。真实 agent 的命令模板写在 `aisubench.toml`，私有覆盖写在被 git 忽略的 `aisubench.local.toml`，不要把 API key 或其他凭证写入仓库。
+
+`watch` 是持续监测的采样侧：一次采样 = meter token 增量 + 额度探针快照，追加到被 git 忽略的账本 `state/ledger.jsonl`（真实使用中长期跑，可配 cron `--once`）；`status` 是展示侧：读账本输出各池「当前已用% | ≈tokens | 100% 当量 Q（±g 区间）| 消耗速率 | 预计耗尽」的中文监控表。账本没有样本时 `status` 会提示先跑 `watch`，这不是错误（退出码仍为 0）。
 
 常用命令：
 
@@ -25,6 +29,8 @@ python3 -m aisubench calibrate --plan <名称> --probe mock|arkcli|manual
 python3 -m aisubench report --out reports/report.md
 python3 -m aisubench report --agent mock --last 10
 python3 -m aisubench report --price 30 --quota-tokens 8200
+python3 -m aisubench watch --agent mock --probe mock --once
+python3 -m aisubench status --window-hours 24
 ```
 
 `aisubench report` 参数说明：
@@ -36,22 +42,35 @@ python3 -m aisubench report --price 30 --quota-tokens 8200
 
 报告中标定区间按 ±g 读数误差传播（g 为百分比显示粒度），`Δ ≤ g` 的窗口上界标记为"不可用"；tokens=0 但额度有变化的窗口同样记为"不可用"。
 
+`aisubench status` 参数说明：
+
+- `--ledger PATH`：账本路径，缺省取 `aisubench.toml` 的 `[watch].ledger`（默认 `state/ledger.jsonl`）。
+- `--window-hours N`：消耗速率窗口小时数，默认 24（窗口右端=该池最新样本）。
+- `--clean-only`：比率估计与速率只用 `clean=true` 的样本，排除网页/手机端等未观测渠道的污染。
+
+`[subscriptions.*].pools` 声明的池会排在表首，账本里还没出现该池样本时单独标注"账本中暂无该池样本"。
+
 ## 仓库结构
 
 ```text
 aisubench/                 扁平 Python 包与 CLI
-  cli.py                   list/run/batch/calibrate/report 命令入口
+  cli.py                   list/run/batch/calibrate/report/watch/status 命令入口
   task.py runner.py        任务加载、隔离执行和验收
   verify.py                验收脚本进程管理（独立进程组、超时击杀）
   calibrate.py             订阅额度标定（±g 置信区间）
   metrics.py               token/TPS/成本指标口径
   report.py                Markdown 报告生成（过滤、折算、标定展示）
+  ledger.py                持续监测账本：watch 写入、status/estimate 读取的 JSONL 样本
+  estimate.py              池比率估计（±g 区间）、消耗速率、ETA（只读账本）
+  watch.py                 持续监测采样：meter 增量 + 探针快照落账本
+  status.py                持续监测状态：账本渲染成各池中文监控表
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针
 tasks/                     10 个确定性任务及 fixtures/verify.py/solution
 runs/                      被 git 忽略的运行 JSON 产物
 reports/                   被 git 忽略的标定 JSON 与 Markdown 报告
+state/                     被 git 忽略的本地状态（账本、meter 偏移、mock 合成日志）
 tests/                     unittest 测试
 docs/benchmark-design.md   架构与标定方法
 docs/metrics.md            精确指标口径

@@ -2,7 +2,7 @@
 
 ## 架构
 
-AISUBench 由任务、runner、meter、quota probe、指标和报告组成。任务目录包含 `task.toml`、`fixtures/` 和验收脚本。runner 将 fixtures 复制到临时工作目录，以该目录为当前目录启动被测 agent，agent 退出或超时后执行验收脚本。验收脚本退出码为 0 即表示任务收敛；agent 自报完成但验收失败会记录为假收敛。
+AISUBench 由任务、runner、meter、quota probe、指标和报告组成，另有持续监测链路的账本（ledger）、估计器（estimate）、采样器（watch）和展示命令（status）。任务目录包含 `task.toml`、`fixtures/` 和验收脚本。runner 将 fixtures 复制到临时工作目录，以该目录为当前目录启动被测 agent，agent 退出或超时后执行验收脚本。验收脚本退出码为 0 即表示任务收敛；agent 自报完成但验收失败会记录为假收敛。
 
 所有运行结果写为 JSON，报告只消费标准化结果，因此实际 agent 和订阅适配器可以独立演进。
 
@@ -29,6 +29,29 @@ quota probe 提供 `snapshot() -> {窗口名: 已用百分比}`，并用 `contin
 显示百分比存在量化误差。若显示粒度为 `g`，`before` 与 `after` 两次读数各自的量化误差为 ±g/2，观测变化 `Δ` 是两次读数之差，最坏误差相加为 **±g**，即 `Δ` 的真实值近似位于 `[Δ-g, Δ+g]`。因此 token/% 区间为 `[tokens/(Δ+g), tokens/(Δ-g)]`；当 `Δ - g ≤ 0`（即 `Δ ≤ g`）时上界不可用，应报告不可分辨，而不应伪造精度。可分辨判据统一为 `Δ > g`。该区间只描述显示粒度误差，不包含任务 token 估算、服务端异步扣量或窗口并发变化等系统误差。
 
 mock 流程只用于验证框架和报告链路；真实订阅评测需要记录服务端时间、窗口定义和采样时刻，并避免并发请求污染标定。
+
+## 持续监测（watch/status）
+
+标定是一次性实验；持续监测则在真实使用中长期采样，链路如下：
+
+```text
+meter（token 增量） + quota probe（池%快照）
+        │ watch 采样
+        ▼
+ledger.jsonl（账本，state/ 内，git 忽略）
+        │ estimate（比率估计 / 速率 / ETA）      estimate_pools · burn_rate · eta_hours
+        ▼
+status（中文监控表：当前% | ≈tokens | Q±区间 | 速率 | 预计耗尽）
+```
+
+- **账本契约**（`aisubench/ledger.py`，每行一个 JSON 样本）：`{"ts", "agent", "source", "usage": {input, cached, output, requests}, "pools": {池名: 已用%}, "clean"}`。`usage` 是自该 agent 上一个样本以来的 token 增量，`pools` 是采样时刻各额度窗口的已用百分比读数。
+- **clean 假设**：距同 agent 上一个样本的间隔小于 `[watch].clean_window_sec`（默认 600 秒）时记 `clean=true`——假设足够密的窗口内，网页版/手机端等未被 meter 观测的渠道消耗可忽略；间隔过长则无法排除这类外部消耗，整段区间标为不 clean。首个样本没有可比的前后间隔，保守记 `clean=false`。估计侧可用 `clean_only` 丢弃任一端不 clean 的相邻对。
+- **比率估计**（`aisubench/estimate.py`）：对相邻样本对 (s[i], s[i+1])，池增量 `Δ = s[i+1].pools[p] − s[i].pools[p]`，对应消耗取 `s[i+1].usage`。点估计为比率估计 `R = Σtokens / ΣΔ`（只在 Δ>0 的有效对上累加，不是各对比率的平均），池 100% 当量 `Q = 100×R`。
+- **±g 置信区间**沿用标定的读数误差口径：每次量化读数误差 ±g/2，Δ 最坏误差 ±g，故 `Q_low = 100×Σtokens/(ΣΔ+g)`、`Q_high = 100×Σtokens/(ΣΔ−g)`；`ΣΔ ≤ g` 时上界不可用。样本不足以给出比率（无有效对或 tokens=0）时标为不可用，不输出伪 0 值。
+- **重置检测**：`Δ < 0` 说明窗口滚动/周期重置，该对不参与比率估计，只累计 `resets` 次数并在 status 备注列展示。
+- **消耗速率与 ETA**：`burn_rate` 取窗口（`--window-hours`，默认 24 小时）内含该池样本的 token 增量之和 ÷ 实际时间跨度，右端为该池最新样本；`ETA = (100 − 当前%) × R ÷ 速率`，任一输入缺失或池已用满时为不可用。
+
+**已知局限**：① claude meter 的 message id 去重集是内存态、不持久化——同一次采样区间内去重正确，但跨采样区间的同消息重复写入会被计两次（长驻进程配小 `--interval` 可减轻）；② 外部渠道噪声——`clean` 只是间隔充分性假设，不是消耗归因，网页/手机端的消耗仍会混入 `usage=0` 但池上涨的对；③ 采样稀疏于 1% 刻度时，只有 Δ>0 的对携带 tokens，比率会被低估——保持采样间隔足够密是前提。
 
 ## 任务与执行边界
 
