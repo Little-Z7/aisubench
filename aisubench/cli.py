@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=float,
                        help="循环采样间隔秒数（默认取 [watch].interval_sec）")
     watch.add_argument("--ledger", help="账本 JSONL 路径（默认 state/ledger.jsonl）")
-    status = sub.add_parser("status", help="持续监测状态：读账本输出各池 当前%/Q 估计/速率/ETA")
+    status = sub.add_parser("status", help="持续监测状态：读账本输出各池 当前%%/Q 估计/速率/ETA")
     status.add_argument("--ledger", help="账本 JSONL 路径（默认取 [watch].ledger）")
     status.add_argument("--window-hours", dest="window_hours", type=float,
                         help="消耗速率窗口小时数（默认 24，右端=该池最新样本）")
