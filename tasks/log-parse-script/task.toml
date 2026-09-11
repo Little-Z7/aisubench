@@ -1,0 +1,15 @@
+id = "log-parse-script"
+tier = "light"
+prompt = """写一个日志统计脚本并产出摘要文件。
+输入：工作区的 app.log。每行的格式是「日期 时间 级别 消息...」，即以空格分隔，第 3 个字段是级别（如 INFO）。文件里可能混有其它级别（如 TRACE）和空行。
+要做：在工作区写脚本 parse_log.py，运行方式是在工作区目录下执行 `python3 parse_log.py`：它读取当前目录的 app.log，统计级别恰好为 INFO、WARN、ERROR 的行各有多少行（其它级别与空行不计入，级别区分大小写），并把结果写入当前目录的 summary.txt。
+输出：工作区的 parse_log.py 和工作区的 summary.txt。summary.txt 必须是三行、顺序与格式固定，每行以换行结尾，没有多余文字或空格：
+第一行 `INFO=<条数>`
+第二行 `WARN=<条数>`
+第三行 `ERROR=<条数>`
+不要改动 app.log。
+验收：verify 从 fixtures/app.log 自己统计出期望条数，先在工作区真实运行 `python3 parse_log.py` 并逐字比对 summary.txt；再把脚本连同一份追加过几条日志的副本放进临时目录跑第二次，确认统计结果会随日志内容变化（把条数写死过不了这一关）。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 2000
+tags = ["parsing"]

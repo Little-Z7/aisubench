@@ -1,23 +1,53 @@
-# 评测指标（草稿）
+# 评测指标口径
 
-> 早期关键词记录，指标口径逐步细化中。
+## Usage 口径
 
-## 效率指标
+每个运行结果的 `usage` 记录 `input`、`output`、`cached`、`requests` 和时间字段，口径如下：
 
-| 指标 | 说明 |
-|---|---|
-| TPS | 生成速度，tokens per second（可再拆首 token 延迟 TTFT） |
-| tokens | 单次任务的总 token 消耗，区分 input / output / cached |
+- `input`：**非缓存**输入 token；供应商的 cache_creation（缓存写入）计入 `input`。
+- `cached`：缓存命中（cache read）单独记录，不并入 `input`。
+- `total`：`input + cached + output`。
 
-## 成本指标
+若日志只有供应商自带的 total 字段，适配器可以将其作为回退值，但应在报告备注中说明转换。
 
-| 指标 | 说明 |
-|---|---|
-| tokens/task | 完成一个任务平均消耗的 token 数（衡量模型"啰嗦程度"和 Agent 循环开销） |
-| 元/task | 完成一个任务的人民币成本 = tokens/task × 单价，订阅制按额度折算 |
+## 速度
 
-## 待讨论
+- **TPS_gen**：`output_tokens / (last_token_ts - first_token_ts)`。缺少任一时间戳、时间差不大于 0，或没有 output token 时记为 0；不能用 wall time 代替生成时间。两个时间戳量纲不一致（一个是 epoch 秒、另一个是 ISO 字符串，无法换算成同一时间轴）时记为 0。
+- **TPS_wall**：`total_tokens / wall_time`。wall time 用**结果级**的 `result.json` 顶层 `wall_time`（runner 在 agent 进程上实测的耗时），包含工具调用、等待和重试，但不包含退出后的 verify 时间。
 
-- 订阅制与按量计费如何统一换算成"元/task"
-- 限流/降速对 TPS 与任务完成率的影响怎么计
-- 是否需要"有效产出成本"：只把通过验收的任务计入分母
+## 任务消耗与通过
+
+- **tokens/task（全部）**：`Σ全部任务 total_tokens / 全部任务数`。失败、超时和触发 `max_tokens` 熔断的任务都计入。
+- **tokens/task（仅通过）**：`Σ通过任务 total_tokens / 通过任务数`。没有通过任务时记为**不可用**，不得显示 0。
+- **通过率**：`通过任务数 / 全部任务数`；空结果集时记为不可用。任务是否收敛只看 verify 命令退出码是否为 0。agent 自报完成不会改变收敛判定，若两者不一致会记录为假收敛。
+
+## 订阅折算
+
+设某订阅窗口价格为 `P` 元，标定得到该窗口 100% 额度的 token 当量为 `Q`：
+
+- **元/task**：`tokens/task（全部） × P / Q`。
+- **元/有效任务**：`Σ全部任务 total_tokens / 通过任务数 × P / Q`。失败消耗仍在分子中；通过数为 0 时报告为不可用而不是 0。
+
+`P / Q` 是本次订阅额度标定的有效折算单价，不是供应商公开 API 的发票单价。不同窗口应分别计算，不能把 5 小时、周、月额度混为一个 Q。
+
+`aisubench report` 的 `--price` / `--quota-tokens` 缺省时：价格自动取 `aisubench.toml` 的 `[subscriptions.*]` 价格，`Q` 自动取 `reports/` 下最新一份 `calibration-*.json` 中第一个可用窗口的 100% token 当量；两者都拿不到时才省略元/task 行。
+
+## 限额 token 当量与置信区间
+
+对一次标定，设任务累计消耗为 `S`，额度从 `before` 变为 `after`，变化为 `Δ = after - before` 个百分点：
+
+`R = tokens_per_quota_pct = S / Δ`（tokens/%）
+
+窗口 100% 的 token 当量为：`Q = 100 × R`。
+
+若百分比最小显示粒度为 `g`，则 `before`/`after` 每次读数的量化误差为 ±g/2，`Δ` 是两次读数之差，最坏误差相加为 **±g**：
+
+- `R_low = S / (Δ + g)`；
+- `R_high = S / (Δ − g)`，当 `Δ − g ≤ 0`（即 `Δ ≤ g`）时上界不可用，必须报告为不可用，不得伪造精度；
+- `Q_low = 100 × R_low`、`Q_high = 100 × R_high`，同样在 `Δ ≤ g` 时上界不可用。
+
+**可分辨判据**：只有 `Δ > g` 时才认为该窗口的 token 当量可分辨。
+
+tokens=0 但 `Δ>0` 的窗口说明没有采集到任何用量，token 当量记为不可用，不输出伪有效的 0 值。
+
+标定循环在只看**活跃窗口**（after 中仍存在、且参与结算的窗口）时提前停止：全部活跃窗口都满足 `Δ > g` 即可停止，或达到 `max_tasks` 预算上限。限流、降速、失败和超时不能从样本中删除，应同时在通过率、wall time 和报告备注中保留。

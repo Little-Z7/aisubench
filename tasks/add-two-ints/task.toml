@@ -1,0 +1,11 @@
+id = "add-two-ints"
+tier = "calibration"
+prompt = """把两个整数相加。
+输入：工作区的 values.txt，一行，两个用空格分隔的整数（可能为负数）。
+要做：计算这两个整数之和。
+输出：在工作区写 answer.txt，内容只有这个十进制整数（可有首尾空白与结尾换行），不要写其它文字。
+验收：verify 读取 values.txt 自行求和，与 answer.txt 中的整数逐个字节比对；同时确认 values.txt 未被改动。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 1000
+tags = ["math"]

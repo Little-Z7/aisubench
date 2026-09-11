@@ -1,0 +1,17 @@
+id = "config-migration"
+tier = "medium"
+prompt = """把配置文件从版本 1 迁移到版本 2。
+输入：工作区的 config.json（版本 1 格式）。
+要做：就地改写工作区的 config.json，迁移到版本 2 格式。版本 2 的顶层键必须恰好是 version、app、server、database、logging、network 这 6 个（版本 1 的 app_name、host、port、debug、db_url、max_retries、allowed_hosts、log_level、timeout_seconds 不得再出现在顶层），映射规则：
+- version：整数 2；
+- app.name <- app_name，app.debug <- debug（保持布尔值）；
+- server.host <- host，server.port <- port（保持整数）；
+- database.url <- db_url；
+- logging.level <- log_level 转大写；
+- network.allowed_hosts <- 把 allowed_hosts 按英文逗号拆成字符串列表，并去掉每个元素的首尾空白；network.max_retries <- max_retries；network.timeout_seconds <- timeout_seconds。
+输出：迁移后的工作区 config.json，仍是合法 JSON（UTF-8、顶层是对象），数值与字符串内容不得改动。
+验收：verify 用 json.load 解析 config.json，再按 fixtures/config.json 与上面的规则独立算出期望结构，断言二者深层相等，并检查 version 是整数 2、debug 是布尔、port 是整数、allowed_hosts 是列表。"""
+verify = "python3 verify.py"
+timeout_sec = 30
+max_tokens = 4000
+tags = ["config"]

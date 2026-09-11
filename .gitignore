@@ -11,6 +11,8 @@ node_modules/
 # Env & secrets
 .env
 *.key
+aisubench.local.toml
+*.secret.toml
 
 # OS / editors
 .DS_Store
@@ -23,3 +25,5 @@ node_modules/
 .mypy_cache/
 dist/
 build/
+runs/
+reports/

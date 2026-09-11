@@ -1,0 +1,11 @@
+id = "rename-across-files"
+tier = "light"
+prompt = """跨文件重命名符号。
+输入：工作区里三个互相引用的源文件 vector.py、physics.py、sim.py（vector.py 定义向量类，physics.py 导入它提供力学函数，sim.py 导入前两者做计算）。
+要做：把类名 Vec2 改成 Vector2D，把函数名 calc_force 改成 compute_force，并更新所有文件里的每一处引用（定义、import、类型标注、调用都要改）。只改这两个标识符：文件名、属性名 x/y、方法名 plus/scale/length、函数名 momentum、模块级数据 GRAVITY/BODIES 都保持不变；旧名 Vec2、calc_force 不得以别名或兼容代码的形式残留。
+输出：改好的 vector.py、physics.py、sim.py（原地修改，不要新增文件）。
+验收：verify 对 vector.py、physics.py、sim.py 逐个做 AST/compile 级检查，断言旧标识符已彻底消失、新标识符存在（注释与 docstring 里的文字不算），最后真正导入并调用，断言 Vector2D/compute_force/momentum/sim.total_weight()/sim.reported() 的行为（期望值由 sim.py 里的数据动态算出）。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 2000
+tags = ["refactor"]

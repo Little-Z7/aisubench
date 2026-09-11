@@ -1,0 +1,24 @@
+# AISUBench 配置示例。
+# 注意：下面 [subscriptions] 的价格与额度均为示例/合成数据，非真实价格。
+# 评测真实订阅时请覆盖为实际值，私有差异写入被 git 忽略的 aisubench.local.toml。
+
+[project]
+name = "AISUBench"
+
+[agents.mock]
+command = ["python3", "-m", "aisubench", "mock-agent"]
+
+[agents.api]
+command = ["python3", "-m", "aisubench", "api-agent"]
+
+# 示例订阅方案（合成数据，非真实价格）：
+# price 单位为元，window 是标定对应的额度窗口。
+[subscriptions.demo]
+price = 30.0
+window = "5h"
+
+[calibration]
+# 标定百分比显示粒度：额度页最小可分辨的已用百分比刻度。
+granularity_pct = 1.0
+# 单次标定最多运行的任务数（预算上限，到数即停）。
+max_tasks = 20

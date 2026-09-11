@@ -1,0 +1,11 @@
+id = "fix-off-by-one"
+tier = "light"
+prompt = """修一个差一（off-by-one）错误。
+输入：工作区的 solution.py，其中 total(values) 本应返回序列里所有数字之和，但现在漏加了最后一个元素。
+要做：原地修改工作区的 solution.py（文件名与函数签名 total(values) 都不能变），使 total 返回全部元素之和；values 可能是 list、tuple 或生成器，可以为空，元素有正有负。
+输出：修复后的工作区 solution.py。
+验收：verify 把 solution.py 作为模块导入，对空序列、单元素、含负数、tuple、生成器等多组输入断言返回值。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 2000
+tags = ["python", "bugfix"]

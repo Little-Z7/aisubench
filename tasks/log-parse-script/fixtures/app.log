@@ -1,0 +1,8 @@
+2026-05-03 08:12:01 INFO service started
+2026-05-03 08:12:04 WARN disk usage 82 percent
+2026-05-03 08:13:09 INFO retry scheduled
+2026-05-03 08:13:11 ERROR cannot reach db
+2026-05-03 08:14:00 TRACE cache warmup
+
+2026-05-03 08:14:02 INFO request handled
+2026-05-03 08:14:07 ERROR timeout waiting for db

@@ -1,0 +1,16 @@
+id = "multi-file-bugfix"
+tier = "medium"
+prompt = """修复一个横跨多文件的缺陷。
+输入：工作区里的 4 个源文件——orders.py（数据，不要改）、cart.py、tax.py、checkout.py。现在执行 `python3 checkout.py` 会直接报错。
+正确的接口与语义（函数名以此为准）：
+- cart.subtotal(items)：items 是含 price / qty 的 dict 列表，返回 Σ price * qty；
+- cart.apply_discount(amount, percent)：按比例打折，返回 amount * (1 - percent / 100)（percent=15 是便宜 15%，不是减 15 元）；
+- tax.TAX_RATES：税率表，数值不要改；tax.add_tax(amount, band)：返回 amount * (1 + TAX_RATES[band])，band 不在表里时抛 ValueError；
+- checkout.order_total(items, discount_percent, band)：先小计、再折扣、最后加税；checkout.DISCOUNT_PERCENT / TAX_BAND 取 15 / standard；main() 打印恰好一行 `TOTAL=<金额>`，金额用两位小数（f"{x:.2f}"）。
+要做：把实现改成符合上面这份规范（只改有错的地方；文件名与模块划分不变，不要新增文件，不要改 ORDERS 与 TAX_RATES 的数值）。
+输出：修好的 cart.py、tax.py、checkout.py。
+验收：verify 导入这些模块并断言各函数对多组输入的行为，再真实执行 `python3 checkout.py`，把 stdout 与用 fixtures 数据独立算出的期望金额比对。"""
+verify = "python3 verify.py"
+timeout_sec = 30
+max_tokens = 4000
+tags = ["bugfix"]

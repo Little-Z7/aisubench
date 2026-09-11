@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "setuptools.build_meta:__legacy__"
+
+[project]
+name = "aisubench"
+version = "0.1.0"
+description = "AI 订阅评测框架"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+aisubench = "aisubench.cli:main"
+
+[tool.setuptools]
+packages = ["aisubench", "aisubench.meters", "aisubench.quota"]

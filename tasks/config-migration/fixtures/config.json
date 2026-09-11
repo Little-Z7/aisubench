@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "app_name": "widget-service",
+  "host": "0.0.0.0",
+  "port": 8080,
+  "debug": true,
+  "db_url": "sqlite:///app.db",
+  "max_retries": 3,
+  "allowed_hosts": "example.com, api.example.com",
+  "log_level": "warning",
+  "timeout_seconds": 120
+}

@@ -1,0 +1,11 @@
+id = "echo-file"
+tier = "calibration"
+prompt = """把一段文本原样抄写到新文件。
+输入：工作区的 input.txt。
+要做：把 input.txt 的全部内容原样写入工作区的 output.txt，一个字节都不能增减（包括结尾换行、空行与大小写）。
+输出：工作区的 output.txt。不要改动或删除 input.txt。
+验收：verify 读取 fixtures/input.txt 的原始字节，与工作区 output.txt 的字节逐一比较，不同即失败。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 1000
+tags = ["file"]

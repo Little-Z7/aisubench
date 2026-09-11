@@ -1,0 +1,11 @@
+id = "fix-syntax"
+tier = "calibration"
+prompt = """修复一个语法错误的 Python 文件。
+输入：工作区的 broken.py（含函数 add，但有语法错误）。
+要做：修好语法错误，使 add(a, b) 返回 a 与 b 之和；把修复后的完整文件另存为工作区的 fixed.py（broken.py 保持原样，不要改名、不要新增依赖）。
+输出：工作区的 fixed.py。
+验收：verify 先 compile() fixed.py（语法必须合法），再把它作为模块导入并断言 add() 对多组入参的返回值。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 1000
+tags = ["python", "syntax"]

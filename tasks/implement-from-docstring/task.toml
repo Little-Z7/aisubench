@@ -1,0 +1,11 @@
+id = "implement-from-docstring"
+tier = "light"
+prompt = """按 docstring 实现函数。
+输入：工作区的 solution.py，里面只有一个带 docstring 的空实现 square(value)。
+要做：按 docstring 的要求实现 square(value)，返回 value * value；保持函数名、签名与文件位置不变（仍是工作区的 solution.py），不要引入第三方依赖。
+输出：实现完成的 solution.py。
+验收：verify 把 solution.py 作为模块导入，对正数、负数、零、float、大整数等多组输入断言返回值等于平方值。"""
+verify = "python3 verify.py"
+timeout_sec = 20
+max_tokens = 2000
+tags = ["python"]
