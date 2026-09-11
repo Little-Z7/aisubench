@@ -14,7 +14,10 @@ python3 -m aisubench calibrate --plan demo --probe mock
 python3 -m aisubench report
 python3 -m aisubench watch --agent mock --probe mock --once
 python3 -m aisubench status
+python3 -m aisubench gui --agent mock --probe mock --sample-interval 60
 ```
+
+最后一条会启动本地监控面板（只绑 127.0.0.1，默认 <http://127.0.0.1:7788>），浏览器里每 5 秒自动刷新各池用量卡片；`--sample-interval` 让 GUI 进程内周期采样，不传则只读账本。
 
 mock agent 完全离线、确定性地产生任务产物和假 usage，可用于验证完整链路。真实 agent 的命令模板写在 `aisubench.toml`，私有覆盖写在被 git 忽略的 `aisubench.local.toml`，不要把 API key 或其他凭证写入仓库。
 
@@ -31,6 +34,7 @@ python3 -m aisubench report --agent mock --last 10
 python3 -m aisubench report --price 30 --quota-tokens 8200
 python3 -m aisubench watch --agent mock --probe mock --once
 python3 -m aisubench status --window-hours 24
+python3 -m aisubench gui --port 7788
 ```
 
 `aisubench report` 参数说明：
@@ -50,11 +54,20 @@ python3 -m aisubench status --window-hours 24
 
 `[subscriptions.*].pools` 声明的池会排在表首，账本里还没出现该池样本时单独标注"账本中暂无该池样本"。
 
+`aisubench gui` 参数说明：
+
+- `--port N`：监听端口，默认 7788；服务只绑定 127.0.0.1，不暴露到局域网。
+- `--window-hours N` / `--clean-only` / `--ledger PATH`：与 `status` 同口径同默认。
+- `--agent X --probe Y`：启用页面「立即采样」按钮（复用 watch 的 meter + 探针会话）；两者需同时提供，不传则按钮置灰。
+- `--sample-interval SEC`：GUI 进程内后台每 SEC 秒采样一次（需同时给 `--agent/--probe`），单进程 = 采样 + 展示；不传则只读账本。
+
+页面数字与 `status` 完全同源（共用 `collect_status`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
+
 ## 仓库结构
 
 ```text
 aisubench/                 扁平 Python 包与 CLI
-  cli.py                   list/run/batch/calibrate/report/watch/status 命令入口
+  cli.py                   list/run/batch/calibrate/report/watch/status/gui 命令入口
   task.py runner.py        任务加载、隔离执行和验收
   verify.py                验收脚本进程管理（独立进程组、超时击杀）
   calibrate.py             订阅额度标定（±g 置信区间）
@@ -63,7 +76,8 @@ aisubench/                 扁平 Python 包与 CLI
   ledger.py                持续监测账本：watch 写入、status/estimate 读取的 JSONL 样本
   estimate.py              池比率估计（±g 区间）、消耗速率、ETA（只读账本）
   watch.py                 持续监测采样：meter 增量 + 探针快照落账本
-  status.py                持续监测状态：账本渲染成各池中文监控表
+  status.py                持续监测状态：collect_status 结构化结果 + 中文监控表渲染
+  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample）
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针

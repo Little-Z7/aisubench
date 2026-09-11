@@ -34,6 +34,20 @@ def run_status(ledger: str | Path | None = None, window_hours: float | None = No
                clean_only: bool = False, config: dict | None = None) -> int:
     """status 子命令主体。``config`` 可注入，便于测试；返回退出码（恒 0）。"""
     config = load_config() if config is None else config
+    print(render_status(collect_status(config, ledger, window_hours, clean_only)))
+    return 0
+
+
+def collect_status(config: dict, ledger: str | Path | None = None,
+                   window_hours: float | None = None, clean_only: bool = False) -> dict:
+    """把 status 的全部计算产出为结构化 dict：``render_status`` 与 GUI 共用。
+
+    返回 {ledger_path, ledger_exists, window_hours, clean_only, n_samples,
+    span_hours, external_tokens, last_sample_ts, pools}；``pools`` 每项为
+    {name, has_samples, current_pct, used_tokens, tokens_per_pct, available,
+    quota_tokens, q_low, q_high, n_pairs, resets, rate_tph, eta_hours}，
+    数值缺失一律为 None（不可用），不输出伪 0 值。
+    """
     watch_cfg = config.get("watch") or {}
     ledger_path = _resolve_path(ledger or watch_cfg.get("ledger"), DEFAULT_LEDGER)
     window = DEFAULT_WINDOW_HOURS if window_hours is None else float(window_hours)
@@ -42,47 +56,78 @@ def run_status(ledger: str | Path | None = None, window_hours: float | None = No
     samples = load_samples(ledger_path)
     estimates = estimate_pools(samples, granularity_pct=_granularity(config),
                                clean_only=clean_only)
-    print(render_status(ledger_path=ledger_path, samples=samples, estimates=estimates,
-                        window_hours=window, clean_only=clean_only,
-                        configured_pools=_configured_pools(config)))
-    return 0
+    meta = estimates.get("_meta") or {}
+    latest = _latest_pools(samples)
+    seen = sorted(name for name in estimates if name != "_meta")
+    ordered = list(dict.fromkeys(list(_configured_pools(config)) + seen))
+    rate_samples = ([s for s in samples if _is_clean(s)] if clean_only
+                    else samples) if samples else []
+    stamps = [stamp for stamp in (_num(s.get("ts")) for s in samples)
+              if stamp is not None]
+    return {
+        "ledger_path": str(ledger_path),
+        "ledger_exists": ledger_path.exists(),
+        "window_hours": window,
+        "clean_only": bool(clean_only),
+        "n_samples": int(meta.get("n_samples", len(samples))),
+        "span_hours": float(meta.get("span_hours", 0.0)),
+        "external_tokens": int(meta.get("external_tokens", 0) or 0),
+        "last_sample_ts": max(stamps) if stamps else None,
+        "pools": [_collect_pool(name, estimates.get(name), latest.get(name),
+                                rate_samples, window) for name in ordered],
+    }
 
 
-def render_status(*, ledger_path: str | Path, samples: list[dict], estimates: dict,
-                  window_hours: float, clean_only: bool,
-                  configured_pools: list[str]) -> str:
-    """把账本 + 估计结果渲染成中文报告文本（不做 IO，便于单测）。"""
-    lines = ["# AISUBench 持续监测状态", f"账本：{ledger_path}"]
-    if not samples:
-        exists = Path(ledger_path).exists()
-        lines.append(f"账本{'' if exists else '（文件尚不存在）'}还没有样本——这是正常的初始状态。")
+def _collect_pool(name: str, est: dict | None, current_pct: float | None,
+                  rate_samples: list[dict], window_hours: float) -> dict:
+    """单池的结构化结果：当前% / 已用 tokens / Q 区间 / 速率 / ETA / 对数与重置。"""
+    ratio = est.get("tokens_per_pct") if est else None
+    rate = burn_rate(rate_samples, name, window_hours)
+    eta = eta_hours(current_pct, ratio, rate) if rate is not None else None
+    return {
+        "name": name,
+        "has_samples": est is not None,
+        "current_pct": current_pct,
+        "used_tokens": (current_pct * ratio
+                        if current_pct is not None and ratio is not None else None),
+        "tokens_per_pct": ratio,
+        "available": bool(est and est.get("available")),
+        "quota_tokens": est.get("quota_tokens") if est else None,
+        "q_low": est.get("q_low") if est else None,
+        "q_high": est.get("q_high") if est else None,
+        "n_pairs": est.get("n_pairs") if est else None,
+        "resets": est.get("resets") if est else None,
+        "rate_tph": rate,
+        "eta_hours": eta,
+    }
+
+
+def render_status(status: dict) -> str:
+    """把 ``collect_status`` 的结构化结果渲染成中文报告文本（不做 IO，便于单测）。"""
+    lines = ["# AISUBench 持续监测状态", f"账本：{status['ledger_path']}"]
+    if status["n_samples"] == 0:
+        suffix = "" if status["ledger_exists"] else "（文件尚不存在）"
+        lines.append(f"账本{suffix}还没有样本——这是正常的初始状态。")
         lines.append("先跑一次采样，再看这里：")
         lines.append("  aisubench watch --agent <name> --probe mock --once")
         return "\n".join(lines)
 
-    meta = estimates.get("_meta") or {}
-    n_samples = int(meta.get("n_samples", len(samples)))
-    mode = "仅 clean 样本" if clean_only else "全部样本"
-    lines.append(f"- 样本数：{n_samples}（速率窗口 {window_hours:g} 小时；估计用{mode}）")
-    lines.append(f"- 监测跨度：{float(meta.get('span_hours', 0.0)):.1f} 小时")
-    external = int(meta.get("external_tokens", 0) or 0)
+    window_hours = status["window_hours"]
+    mode = "仅 clean 样本" if status["clean_only"] else "全部样本"
+    lines.append(f"- 样本数：{status['n_samples']}（速率窗口 {window_hours:g} 小时；估计用{mode}）")
+    lines.append(f"- 监测跨度：{status['span_hours']:.1f} 小时")
+    external = status["external_tokens"]
     if external > 0:
         lines.append(f"- 提示：clean=False 区间累计约 {external:,} tokens 可能混入未观测渠道"
                      "（网页版、手机端等）；加 --clean-only 可将其排除出估计。")
 
-    latest = _latest_pools(samples)
-    seen = sorted(name for name in estimates if name != "_meta")
-    pools = list(dict.fromkeys(list(configured_pools) + seen))
-    rate_samples = ([s for s in samples if _is_clean(s)] if clean_only
-                    else samples) if samples else []
-
+    pools = status["pools"]
     if not pools:
         lines.append("")
         lines.append("样本里没有任何额度池，且配置 [subscriptions.*].pools 未声明池。")
         return "\n".join(lines)
 
-    rows = [_pool_row(name, estimates.get(name), latest.get(name), rate_samples,
-                      window_hours) for name in pools]
+    rows = [_pool_row(pool) for pool in pools]
     header = ("池", "当前已用%", "已用≈tokens", f"100%当量Q(低–高)",
               f"速率(近{window_hours:g}h)", "预计耗尽", "备注")
     lines.append("")
@@ -90,32 +135,31 @@ def render_status(*, ledger_path: str | Path, samples: list[dict], estimates: di
     return "\n".join(lines)
 
 
-def _pool_row(name: str, est: dict | None, current_pct: float | None,
-              rate_samples: list[dict], window_hours: float) -> tuple[str, ...]:
-    ratio = est.get("tokens_per_pct") if est else None
-    used = (f"{current_pct * ratio:,.0f}"
-            if current_pct is not None and ratio is not None else "—")
-    if est is None:
+def _pool_row(pool: dict) -> tuple[str, ...]:
+    used = "—" if pool["used_tokens"] is None else f"{pool['used_tokens']:,.0f}"
+    if not pool["has_samples"]:
         quota = "—"
-    elif not est.get("available"):
+    elif not pool["available"]:
         quota = _INSUFFICIENT
     else:
-        low, high = est.get("q_low"), est.get("q_high")
-        quota = (f"{est['quota_tokens']:,.0f} ({low:,.0f}–{high:,.0f})"
-                 if high is not None else f"{est['quota_tokens']:,.0f} (≥{low:,.0f})")
-    rate = burn_rate(rate_samples, name, window_hours)
-    eta = eta_hours(current_pct, ratio, rate) if rate is not None else None
-    if est is None:
+        low, high = pool["q_low"], pool["q_high"]
+        quota = (f"{pool['quota_tokens']:,.0f} ({low:,.0f}–{high:,.0f})"
+                 if high is not None else f"{pool['quota_tokens']:,.0f} (≥{low:,.0f})")
+    rate, eta = pool["rate_tph"], pool["eta_hours"]
+    if not pool["has_samples"]:
         note = "账本中暂无该池样本"
     else:
-        note = f"对={est['n_pairs']} 重置={est['resets']}"
-        if est.get("available") and 0 < est["n_pairs"] < LOW_PAIRS_HINT_MAX:
+        note = f"对={pool['n_pairs']} 重置={pool['resets']}"
+        if pool["available"] and 0 < pool["n_pairs"] < LOW_PAIRS_HINT_MAX:
             note += "（对数偏少，估计仅供参考）"
-    return (name,
+    current_pct = pool["current_pct"]
+    return (pool["name"],
             "—" if current_pct is None else f"{current_pct:g}%",
             used, quota,
-            "—" if est is None else (_UNAVAILABLE if rate is None else f"{rate:,.0f} tok/h"),
-            "—" if est is None else (_UNAVAILABLE if eta is None else f"{eta:.1f} h"),
+            "—" if not pool["has_samples"]
+            else (_UNAVAILABLE if rate is None else f"{rate:,.0f} tok/h"),
+            "—" if not pool["has_samples"]
+            else (_UNAVAILABLE if eta is None else f"{eta:.1f} h"),
             note)
 
 

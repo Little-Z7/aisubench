@@ -41,7 +41,7 @@ meter（token 增量） + quota probe（池%快照）
 ledger.jsonl（账本，state/ 内，git 忽略）
         │ estimate（比率估计 / 速率 / ETA）      estimate_pools · burn_rate · eta_hours
         ▼
-status（中文监控表：当前% | ≈tokens | Q±区间 | 速率 | 预计耗尽）
+status.collect_status（结构化 dict）──► status（中文监控表）/ gui（本地 Web 面板）
 ```
 
 - **账本契约**（`aisubench/ledger.py`，每行一个 JSON 样本）：`{"ts", "agent", "source", "usage": {input, cached, output, requests}, "pools": {池名: 已用%}, "clean"}`。`usage` 是自该 agent 上一个样本以来的 token 增量，`pools` 是采样时刻各额度窗口的已用百分比读数。
@@ -50,6 +50,12 @@ status（中文监控表：当前% | ≈tokens | Q±区间 | 速率 | 预计耗�
 - **±g 置信区间**沿用标定的读数误差口径：每次量化读数误差 ±g/2，Δ 最坏误差 ±g，故 `Q_low = 100×Σtokens/(ΣΔ+g)`、`Q_high = 100×Σtokens/(ΣΔ−g)`；`ΣΔ ≤ g` 时上界不可用。样本不足以给出比率（无有效对或 tokens=0）时标为不可用，不输出伪 0 值。
 - **重置检测**：`Δ < 0` 说明窗口滚动/周期重置，该对不参与比率估计，只累计 `resets` 次数并在 status 备注列展示。
 - **消耗速率与 ETA**：`burn_rate` 取窗口（`--window-hours`，默认 24 小时）内含该池样本的 token 增量之和 ÷ 实际时间跨度，右端为该池最新样本；`ETA = (100 − 当前%) × R ÷ 速率`，任一输入缺失或池已用满时为不可用。
+
+### 本地监控面板（gui）
+
+`aisubench gui` 用标准库 `http.server.ThreadingHTTPServer` 起只绑 127.0.0.1 的单页面板（`aisubench/dashboard.html`，无外部资源，前端每 5 秒拉一次 `GET /api/status`）。`/api/status` 与 CLI `status` 共用 `collect_status`，数字与措辞（不可用 / 数据不足(Δ 未超粒度)）完全一致，另附 `server_time` / `sampling_enabled` / `sample_interval_sec` / `stale`（最新样本超过采样间隔 3 倍）等面板辅助字段。
+
+采样能力复用 watch 的 `WatchSession.sample_once`：`POST /api/sample` 触发「立即采样」（需启动时传 `--agent/--probe`，否则按钮置灰且接口返回 403；与后台线程共用一把锁，并发重入返回 409）；`--sample-interval N` 时 GUI 进程内起守护线程每 N 秒采样一次，瞬时异常只警告并继续——单进程即完成采样 + 展示，不传采样参数时面板只读账本。
 
 **已知局限**：① claude meter 的 message id 去重集是内存态、不持久化——同一次采样区间内去重正确，但跨采样区间的同消息重复写入会被计两次（长驻进程配小 `--interval` 可减轻）；② 外部渠道噪声——`clean` 只是间隔充分性假设，不是消耗归因，网页/手机端的消耗仍会混入 `usage=0` 但池上涨的对；③ 采样稀疏于 1% 刻度时，只有 Δ>0 的对携带 tokens，比率会被低估——保持采样间隔足够密是前提。
 

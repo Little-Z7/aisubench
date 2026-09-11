@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AISUBench 监控面板</title>
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --border: #30363d;
+  --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
+button {
+  background: #21262d; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+}
+button:hover:not(:disabled) { background: #30363d; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+#meta {
+  margin: 12px 0; padding: 10px 14px; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+}
+#meta.stale { opacity: .55; }
+.warn-text { color: var(--warn); }
+#pools { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.pool-name { font-weight: 600; font-size: 15px; }
+.pct { font-size: 18px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.bar { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+.bar-fill { height: 100%; background: var(--ok); transition: width .4s; }
+.bar-fill.mid { background: var(--warn); }
+.bar-fill.high { background: var(--bad); }
+dl { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin: 0; font-size: 12.5px; }
+dl > div { display: flex; justify-content: space-between; gap: 8px; }
+dl .wide { grid-column: 1 / -1; }
+dt { color: var(--dim); }
+dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.empty {
+  grid-column: 1 / -1; padding: 28px; text-align: center; color: var(--dim);
+  background: var(--panel); border: 1px dashed var(--border); border-radius: 8px;
+}
+.empty code { color: var(--accent); background: #21262d; padding: 2px 6px; border-radius: 4px; }
+#toast {
+  position: fixed; bottom: 16px; right: 16px; display: none; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AISUBench 持续监测</h1>
+      <div class="sub" id="ledger"></div>
+    </div>
+    <button id="sample-btn" disabled>立即采样</button>
+  </header>
+  <section id="meta">加载中…</section>
+  <main id="pools"></main>
+</div>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const num = x => (x === null || x === undefined) ? null
+  : Math.round(x).toLocaleString("en-US");
+const fixed = (x, d) => (x === null || x === undefined) ? null : Number(x).toFixed(d);
+
+function quotaText(p) {
+  if (!p.has_samples) return "—";
+  if (!p.available) return "数据不足(Δ 未超粒度)";
+  const q = num(p.quota_tokens), low = num(p.q_low), high = num(p.q_high);
+  return high === null ? `${q} (≥${low})` : `${q} (${low}–${high})`;
+}
+const rateText = p => !p.has_samples ? "—"
+  : (p.rate_tph === null ? "不可用" : `${num(p.rate_tph)} tok/h`);
+const etaText = p => !p.has_samples ? "—"
+  : (p.eta_hours === null ? "不可用" : `${fixed(p.eta_hours, 1)} h`);
+
+function poolCard(p, win) {
+  const pct = p.current_pct;
+  const width = Math.max(0, Math.min(100, pct === null ? 0 : pct));
+  const cls = pct === null ? "" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
+  const used = p.used_tokens === null ? "—" : num(p.used_tokens);
+  const pairs = p.has_samples ? `对=${p.n_pairs} 重置=${p.resets}` : "账本中暂无该池样本";
+  const hint = p.has_samples && p.available && p.n_pairs > 0 && p.n_pairs < 3
+    ? `<div class="wide"><dt>备注</dt><dd class="warn-text">对数偏少，估计仅供参考</dd></div>` : "";
+  return `<div class="card">
+    <div class="card-head"><span class="pool-name">${esc(p.name)}</span>
+      <span class="pct">${pct === null ? "—" : pct + "%"}</span></div>
+    <div class="bar"><div class="bar-fill ${cls}" style="width:${width}%"></div></div>
+    <dl>
+      <div><dt>已用≈tokens</dt><dd>${used}</dd></div>
+      <div><dt>速率(近${win}h)</dt><dd>${rateText(p)}</dd></div>
+      <div class="wide"><dt>100% 当量 Q</dt><dd>${quotaText(p)}</dd></div>
+      <div><dt>预计耗尽</dt><dd>${etaText(p)}</dd></div>
+      <div><dt>有效对/重置</dt><dd>${pairs}</dd></div>
+      ${hint}
+    </dl>
+  </div>`;
+}
+
+function render(data) {
+  $("#ledger").textContent = "账本：" + data.ledger_path;
+  const btn = $("#sample-btn");
+  btn.disabled = !data.sampling_enabled;
+  btn.title = data.sampling_enabled ? "" : "启动时需传 --agent/--probe 才可采样";
+
+  const meta = $("#meta");
+  meta.classList.toggle("stale", !!data.stale);
+  const mode = data.clean_only ? "仅 clean 样本" : "全部样本";
+  const last = data.last_sample_ts === null ? "—"
+    : new Date(data.last_sample_ts * 1000).toLocaleString("zh-CN", {hour12: false});
+  let html = `样本数：${data.n_samples}（速率窗口 ${data.window_hours} 小时；估计用${mode}）`
+    + `　·　监测跨度：${fixed(data.span_hours, 1)} 小时　·　最后采样：${last}`;
+  if (data.sample_interval_sec) html += `（间隔 ${data.sample_interval_sec}s）`;
+  if (data.stale)
+    html += `　<span class="warn-text">数据可能已过期：最新样本超过采样间隔 3 倍</span>`;
+  if (data.external_tokens > 0)
+    html += `<div class="warn-text">提示：clean=False 区间累计约 ${num(data.external_tokens)} tokens`
+      + ` 可能混入未观测渠道（网页版、手机端等）；加 --clean-only 可将其排除出估计。</div>`;
+  meta.innerHTML = html;
+
+  const pools = $("#pools");
+  if (data.n_samples === 0) {
+    pools.innerHTML = `<div class="empty">账本还没有样本——这是正常的初始状态。<br>
+      先跑一次采样：<code>python3 -m aisubench watch --agent &lt;name&gt; --probe mock --once</code></div>`;
+    return;
+  }
+  pools.innerHTML = data.pools.length
+    ? data.pools.map(p => poolCard(p, data.window_hours)).join("")
+    : `<div class="empty">样本里没有任何额度池，且配置 [subscriptions.*].pools 未声明池。</div>`;
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  setTimeout(() => { t.style.display = "none"; }, 4000);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/status", {cache: "no-store"});
+    render(await res.json());
+  } catch (e) {
+    $("#meta").textContent = "状态获取失败：" + e;
+  }
+}
+
+$("#sample-btn").addEventListener("click", async () => {
+  $("#sample-btn").disabled = true;
+  try {
+    const res = await fetch("/api/sample", {method: "POST"});
+    const body = await res.json();
+    toast(res.ok ? "采样完成" : `采样失败：${body.error || res.status}`);
+  } catch (e) {
+    toast("采样请求失败：" + e);
+  } finally {
+    refresh();
+  }
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

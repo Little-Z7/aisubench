@@ -6,6 +6,7 @@ import sys
 
 from .calibrate import calibrate
 from .config import ROOT, load_config
+from .gui import run_gui
 from .quota.arkcli import ArkcliQuotaProbe
 from .quota.manual import ManualQuotaProbe
 from .quota.mock import MockQuotaProbe
@@ -51,6 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="消耗速率窗口小时数（默认 24，右端=该池最新样本）")
     status.add_argument("--clean-only", dest="clean_only", action="store_true",
                         help="只用 clean 样本估计与计速率，排除未观测渠道污染")
+    gui = sub.add_parser("gui", help="本地 Web 监控面板（只绑 127.0.0.1，可选进程内采样）")
+    gui.add_argument("--port", type=int, default=7788, help="监听端口（默认 7788）")
+    gui.add_argument("--window-hours", dest="window_hours", type=float,
+                     help="消耗速率窗口小时数（默认 24，同 status）")
+    gui.add_argument("--clean-only", dest="clean_only", action="store_true",
+                     help="只用 clean 样本估计与计速率（同 status）")
+    gui.add_argument("--sample-interval", dest="sample_interval", type=float, metavar="SEC",
+                     help="GUI 进程内后台采样间隔秒数（需同时给 --agent/--probe；不传则只读账本）")
+    gui.add_argument("--agent",
+                     help="agent 名，取 [agents.*] 的 meter/log_path（mock 用内置合成日志）")
+    gui.add_argument("--probe", choices=["mock", "arkcli", "manual"], help="额度探针")
+    gui.add_argument("--ledger", help="账本 JSONL 路径（默认取 [watch].ledger）")
     return parser
 
 
@@ -113,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             return run_status(ledger=args.ledger, window_hours=args.window_hours,
                               clean_only=args.clean_only)
+        if args.command == "gui":
+            return run_gui(port=args.port, window_hours=args.window_hours,
+                           clean_only=args.clean_only,
+                           sample_interval=args.sample_interval,
+                           agent=args.agent, probe=args.probe, ledger=args.ledger)
         return 2
     except FileNotFoundError as exc:
         print(f"错误：{exc}", file=sys.stderr)
