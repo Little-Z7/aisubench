@@ -51,7 +51,7 @@ button:hover:not(:disabled) {
 button:disabled { opacity: .45; cursor: not-allowed; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-#debug-link { font-size: 13px; align-self: center; }
+#bench-link, #debug-link { font-size: 13px; align-self: center; }
 
 .glass {
   background: var(--glass);
@@ -223,6 +223,7 @@ a:hover { text-decoration: underline; }
       <h1>AISUBench 持续监测</h1>
       <div class="sub" id="ledger"></div>
     </div>
+    <a id="bench-link" href="/bench">任务评测</a>
     <a id="debug-link" href="/debug" hidden>调试模式</a>
     <button id="sample-btn" disabled>立即采样</button>
   </header>

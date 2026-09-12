@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -139,6 +140,8 @@ class GuiServerTests(unittest.TestCase):
             self.assertIn("<html", body)
             self.assertIn("AISUBench 监控面板", body)
             self.assertIn("/api/status", body)
+            # 顶部导航固定带「任务评测」入口（/debug 入口仍按 --debug 显隐）
+            self.assertIn('href="/bench"', body)
 
     def test_api_status_synthetic_ledger(self):
         samples = [mk(0, {"5h": 0}),
@@ -324,6 +327,110 @@ class GuiServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 fix.get("/nope")
             self.assertEqual(ctx.exception.code, 404)
+
+
+class BenchPageTests(unittest.TestCase):
+    """GET /bench 任务评测页：与 CLI report 同口径的汇总卡 + 明细表。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.runs = self.root / "runs"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def make_state(self, **kwargs):
+        config = {**CONFIG, "watch": {"interval_sec": 300,
+                                      "alerts_file": str(self.root / "alerts.json"),
+                                      "offsets_file": str(self.root / "offsets.json")}}
+        return GuiState(config=config, ledger_path=self.root / "ledger.jsonl",
+                        window_hours=24.0, runs_dir=self.runs, **kwargs)
+
+    def write_run(self, run_id, task_id, agent, converged, *, input=0, cached=0,
+                  output=0, wall_time=1.0, first_ts=None, last_ts=None, mtime=None):
+        run_dir = self.runs / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        result = {
+            "run_id": run_id, "task_id": task_id, "tier": "light", "agent": agent,
+            "started_at": "2026-09-12T00:00:00+00:00", "wall_time": wall_time,
+            "verify": {"passed": converged}, "converged": converged,
+            "usage": {"input": input, "cached": cached, "output": output,
+                      "first_token_ts": first_ts, "last_token_ts": last_ts},
+        }
+        (run_dir / "result.json").write_text(
+            json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        if mtime is not None:  # load_results 按目录 mtime 排序，显式固定
+            os.utime(run_dir, (mtime, mtime))
+
+    def test_bench_page_renders_summary_and_detail(self):
+        # r1：total=100+20+50=170，tps_gen=50/(3-1)=25.00，tps_wall=170/8=21.25
+        self.write_run("r1", "task-a", "mock", True, input=100, cached=20,
+                       output=50, wall_time=8.0, first_ts=1.0, last_ts=3.0,
+                       mtime=1000)
+        # r2：total=200，无首末 token 时间戳 → tps_gen=0.00，tps_wall=200/4=50.00
+        self.write_run("r2", "task-b", "other", False, input=200, wall_time=4.0,
+                       mtime=2000)
+        with ServerFixture(self.make_state()) as fix:
+            response = fix.get("/bench")
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/html", response.headers["Content-Type"])
+            body = response.read().decode("utf-8")
+        # 汇总卡：2 任务 / 通过 1 / 50.0% / 总 token 370 / 185.0 / 170.0
+        self.assertIn("任务数", body)
+        self.assertIn("通过率", body)
+        self.assertIn("50.0%", body)
+        self.assertIn("370", body)
+        self.assertIn("185.0", body)
+        self.assertIn("170.0", body)
+        # 无价格参数 → 元/task 两行沿用「不可用」措辞并提示 CLI --price
+        self.assertIn("元/task", body)
+        self.assertIn("元/有效任务", body)
+        self.assertIn("不可用", body)
+        self.assertIn("--price", body)
+        # 明细表：任务名/agent/结果/tokens/cached/TPS_gen/TPS_wall/耗时
+        self.assertIn("task-a", body)
+        self.assertIn("task-b", body)
+        self.assertIn("mock", body)
+        self.assertIn("other", body)
+        self.assertIn("通过", body)
+        self.assertIn("失败", body)
+        self.assertIn("25.00", body)
+        self.assertIn("21.25", body)
+        self.assertIn("50.00", body)
+        self.assertIn("8.00s", body)
+        self.assertIn("4.00s", body)
+        self.assertIn("TPS_gen", body)
+        self.assertIn("TPS_wall", body)
+        self.assertIn("cached", body)
+        # 导航与返回链接
+        self.assertIn("返回监控面板", body)
+
+    def test_bench_page_empty_runs_guidance(self):
+        with ServerFixture(self.make_state()) as fix:
+            response = fix.get("/bench")
+            self.assertEqual(response.status, 200)
+            body = response.read().decode("utf-8")
+        self.assertIn("python3 -m aisubench batch --tier light --agent mock", body)
+        self.assertIn("返回监控面板", body)
+
+    def test_bench_page_agent_filter(self):
+        self.write_run("r1", "task-a", "mock", True, input=100, output=50,
+                       mtime=1000)
+        self.write_run("r2", "task-b", "other", False, input=200, mtime=2000)
+        with ServerFixture(self.make_state()) as fix:
+            body = fix.get("/bench?agent=mock").read().decode("utf-8")
+        self.assertIn("task-a", body)
+        self.assertNotIn("task-b", body)
+        self.assertIn("agent=mock", body)
+        self.assertIn("100.0%", body)
+        # 过滤无匹配 → 空态文案；last=N 只保留最新 N 个 run
+        with ServerFixture(self.make_state()) as fix:
+            empty = fix.get("/bench?agent=ghost").read().decode("utf-8")
+            last1 = fix.get("/bench?last=1").read().decode("utf-8")
+        self.assertIn("没有匹配", empty)
+        self.assertIn("task-b", last1)
+        self.assertNotIn("task-a", last1)
 
 
 class AlertApiTests(unittest.TestCase):

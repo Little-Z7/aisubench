@@ -27,6 +27,13 @@
                        ``{"key": "<订阅>.<池>", "enabled": true|false}``，
                        持久化到 ``state/alerts.json``（``[watch].alerts_file``
                        可覆盖路径）；
+- ``GET /bench``      服务端渲染的「任务评测」页：复用 ``report.load_results`` 与
+                       ``metrics.task_metrics/total_tokens/tps_gen/tps_wall``，与
+                       CLI ``report`` 同口径展示汇总卡（任务数/通过率/总 token/
+                       tokens/task/元/task）与逐 run 明细表；支持
+                       ``?agent=X&last=N`` 过滤（同 ``report --agent/--last``），
+                       页面不带价格参数，元/task 按报告措辞显示「不可用」，
+                       runs/ 为空时给出 batch 引导；
 - ``GET /debug``       仅 ``--debug`` 时开放（否则 404）：服务端渲染的调试页，
                        含状态栏预览（复用 ``shells/shared/viewmodel`` 的
                        title_text/pool_rows/header_rows，浏览器所见即菜单栏
@@ -53,6 +60,8 @@ from urllib.parse import parse_qs, urlparse
 from .alerts import ALERTS_FILE, load_alerts, set_alert
 from .calibrate import calibrate_plan, calibration_report_path
 from .config import ROOT, load_config
+from .metrics import task_metrics, total_tokens, tps_gen, tps_wall
+from .report import load_results
 from .runner import Runner
 from .ledger import DEFAULT_LEDGER
 from .status import (DEFAULT_WINDOW_HOURS, collect_status,
@@ -73,7 +82,8 @@ class GuiState:
                  sample_interval_sec: float | None = None,
                  debug: bool = False,
                  runner: Runner | None = None,
-                 reports_dir: str | Path | None = None):
+                 reports_dir: str | Path | None = None,
+                 runs_dir: str | Path | None = None):
         self.config = config
         self.ledger_path = Path(ledger_path)
         self.window_hours = float(window_hours)
@@ -90,6 +100,8 @@ class GuiState:
         # {订阅名: 状态机 dict}，calibration_lock 保护其读写与防重入判定。
         self.runner = runner
         self.reports_dir = Path(reports_dir) if reports_dir else ROOT / "reports"
+        # /bench 任务评测页的 runs 目录：与 CLI report 汇总的是同一目录。
+        self.runs_dir = Path(runs_dir) if runs_dir else ROOT / "runs"
         self.calibrations: dict[str, dict] = {}
         self.calibration_lock = threading.Lock()
 
@@ -263,6 +275,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             name = (query.get("subscription") or [""])[0]
             self._send_json(200, self.server.state.calibration_status(name))
+        elif path == "/bench":
+            query = parse_qs(urlparse(self.path).query)
+            self._send(200, "text/html; charset=utf-8",
+                       _bench_page(self.server.state, query))
         else:
             self._send_json(404, {"ok": False, "error": "未知路径"})
 
@@ -432,7 +448,7 @@ pre .dim {{ color: var(--dim); }}
       <h1>AISUBench 调试模式</h1>
       <div class="sub">数据刷新时间：{stamp}（手动刷新页面更新，不自动轮询）</div>
     </div>
-    <div><a href="/">← 返回监控面板</a></div>
+    <div><a href="/">← 返回监控面板</a> · <a href="/bench">任务评测</a></div>
   </header>
   <section class="card">
     <h2>状态栏预览（与 macOS 菜单栏菜单一致）</h2>
@@ -452,6 +468,237 @@ pre .dim {{ color: var(--dim); }}
     <h2>原始数据 · meter_offsets.json</h2>
     <pre>{offsets_text}</pre>
   </section>
+</div>
+</body>
+</html>
+"""
+    return page.encode("utf-8")
+
+
+def _bench_filter(query: dict[str, list[str]]) -> tuple[str | None, int | None]:
+    """解析 /bench 的 ?agent=X&last=N；空 agent 与非法/负数 last 视为未过滤。"""
+    agent = str((query.get("agent") or [""])[0]).strip() or None
+    last = None
+    raw = str((query.get("last") or [""])[0]).strip()
+    if raw:
+        try:
+            last = int(raw)
+        except ValueError:
+            last = None
+        if last is not None and last < 0:
+            last = None
+    return agent, last
+
+
+def _fmt_metric(value: float | None, fmt: str) -> str:
+    """与 report._metric_text 同措辞：None 显示「不可用」。"""
+    return "不可用" if value is None else fmt.format(value)
+
+
+def _bench_page(state: GuiState, query: dict[str, list[str]]) -> bytes:
+    """服务端渲染 /bench 任务评测页：与 CLI report 完全同口径的汇总 + 明细。
+
+    数字全部出自 report.load_results 与 metrics.task_metrics/total_tokens/
+    tps_gen/tps_wall（不重写数学）；页面不带价格参数，元/task 两行按报告
+    措辞显示「不可用」并提示用 CLI report --price 折算。
+    """
+    agent, last = _bench_filter(query)
+    results = load_results(state.runs_dir, agent=agent, last=last)
+    summary = task_metrics(results)
+    total_runs = len(list(Path(state.runs_dir).glob("*/result.json")))
+
+    filters = []
+    if agent is not None:
+        filters.append(f"agent={agent}")
+    if last is not None:
+        filters.append(f"last={last}")
+    filter_line = (f'<div class="meta-line">过滤：{_esc(" · ".join(filters))}'
+                   f'（<a href="/bench">清除过滤</a>）</div>' if filters else "")
+
+    if total_runs == 0:
+        content = """<section class="empty">
+        runs/ 目录还没有任务评测结果。<br>
+        先跑一次批量评测：<code>python3 -m aisubench batch --tier light --agent mock</code><br>
+        之后刷新本页即可看到汇总与明细。
+      </section>"""
+    elif not results:
+        content = f"""<section class="empty">
+        当前过滤条件下没有匹配的 run（{_esc(" · ".join(filters))}）。<br>
+        runs/ 下共 {total_runs} 个 run，<a href="/bench">清除过滤查看全部</a>。
+      </section>"""
+    else:
+        pass_rate = summary["pass_rate"]
+        pct = 0.0 if pass_rate is None else max(0.0, min(100.0, pass_rate * 100))
+        rate_text = _fmt_metric(pass_rate, "{:.1%}")
+        rows = []
+        for item in results:
+            usage = item.get("usage", {})
+            passed = bool(item.get(
+                "converged", item.get("verify", {}).get("passed", False)))
+            tag = ('<span class="tag ok">通过</span>' if passed
+                   else '<span class="tag bad">失败</span>')
+            try:
+                wall_text = f"{float(item.get('wall_time')):.2f}s"
+            except (TypeError, ValueError):
+                wall_text = "—"
+            rows.append(
+                f"<tr><td>{_esc(item.get('task_id', ''))}</td>"
+                f"<td>{_esc(item.get('agent', ''))}</td>"
+                f"<td>{tag}</td>"
+                f'<td class="num">{total_tokens(usage)}</td>'
+                f'<td class="num">{_esc(usage.get("cached", 0))}</td>'
+                f'<td class="num">{tps_gen(usage):.2f}</td>'
+                f'<td class="num">{tps_wall(usage, item.get("wall_time")):.2f}</td>'
+                f'<td class="num">{wall_text}</td></tr>')
+        content = f"""
+      <section class="glass" id="bench-summary">
+        <div class="stats">
+          <div class="stat"><div class="v">{summary['tasks']}</div>
+            <div class="k">任务数</div></div>
+          <div class="stat"><div class="v">{rate_text}</div>
+            <div class="k">通过率（通过 {summary['passed']}）</div></div>
+          <div class="stat"><div class="v">{summary['total_tokens']}</div>
+            <div class="k">总 token</div></div>
+          <div class="stat"><div class="v">{_fmt_metric(summary['tokens_per_task'], '{:.1f}')}</div>
+            <div class="k">tokens/task（全部）</div></div>
+          <div class="stat"><div class="v">{_fmt_metric(summary['tokens_per_passed_task'], '{:.1f}')}</div>
+            <div class="k">tokens/task（仅通过）</div></div>
+          <div class="stat"><div class="v na">{_fmt_metric(summary.get('yuan_per_task'), '{:.4f}')}</div>
+            <div class="k">元/task</div></div>
+          <div class="stat"><div class="v na">{_fmt_metric(summary.get('yuan_per_effective_task'), '{:.4f}')}</div>
+            <div class="k">元/有效任务</div></div>
+        </div>
+        <div class="pass-row"><span class="pass-k">通过率</span>
+          <div class="p-bar"><div class="p-fill" style="width:{pct:.1f}%"></div></div>
+          <span class="pass-v">{rate_text}</span></div>
+        <div class="meta-line">页面未提供价格参数（--price / --quota-tokens），元/task 显示为「不可用」；
+          需要订阅折算时用 CLI <code>aisubench report --price YUAN --quota-tokens N</code>。</div>
+        <div class="meta-line">汇总范围：runs/ 下共 {total_runs} 个 run，当前匹配 {len(results)} 个
+          （与 <code>aisubench report</code> 同口径同数字）。</div>
+        {filter_line}
+      </section>
+      <section class="glass" id="bench-detail">
+        <h2>任务明细</h2>
+        <table>
+          <thead><tr><th>任务</th><th>Agent</th><th>结果</th><th>tokens</th>
+            <th>cached</th><th>TPS_gen</th><th>TPS_wall</th><th>耗时</th></tr></thead>
+          <tbody>
+            {chr(10).join(rows)}
+          </tbody>
+        </table>
+      </section>"""
+
+    page = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AISUBench 任务评测</title>
+<style>
+:root {{
+  --bg: #0a0e1a;
+  --fg: #e8edf6; --dim: #93a0b4; --dim2: #6b7890;
+  --accent: #6ea8ff; --accent2: #a78bfa;
+  --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+  --glass: rgba(255, 255, 255, .055);
+  --glass-border: rgba(255, 255, 255, .11);
+  --glass-shadow: 0 10px 34px rgba(2, 6, 18, .45);
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0; color: var(--fg); min-height: 100vh;
+  font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+}}
+body::before {{
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(52vw 52vw at 12% -6%, rgba(56, 89, 199, .34), transparent 62%),
+    radial-gradient(46vw 46vw at 88% 18%, rgba(124, 78, 189, .28), transparent 60%),
+    radial-gradient(58vw 58vw at 55% 105%, rgba(23, 116, 128, .30), transparent 64%),
+    var(--bg);
+}}
+.wrap {{ max-width: 1080px; margin: 0 auto; padding: 22px 18px 40px; }}
+header {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
+h1 {{
+  font-size: 21px; margin: 0; font-weight: 650; letter-spacing: .01em;
+  background: linear-gradient(92deg, #eaf0ff, #b9c8ff 60%, #a78bfa);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}}
+.sub {{ color: var(--dim); font-size: 12px; margin-top: 3px; }}
+a {{ color: var(--accent); text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+.glass {{
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
+}}
+#bench-summary {{ margin: 14px 0 16px; padding: 16px 18px; font-size: 13px; }}
+#bench-detail {{ padding: 16px 18px; }}
+#bench-detail h2 {{ font-size: 15px; margin: 0 0 10px; font-weight: 600; }}
+.stats {{ display: flex; gap: 26px; flex-wrap: wrap; }}
+.stat .v {{
+  font-size: 21px; font-weight: 650; letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;
+}}
+.stat .v.na {{ color: var(--dim2); font-size: 17px; font-weight: 500; }}
+.stat .k {{ color: var(--dim); font-size: 11.5px; margin-top: 1px; }}
+.meta-line {{ color: var(--dim); margin-top: 8px; }}
+.meta-line code, .empty code {{
+  color: var(--accent); background: rgba(255, 255, 255, .08);
+  padding: 1px 6px; border-radius: 6px; font-size: 12.5px;
+}}
+.pass-row {{ display: flex; align-items: center; gap: 10px; margin-top: 14px; }}
+.pass-k {{ flex: none; color: var(--dim); font-size: 12px; }}
+.pass-v {{ flex: none; font-variant-numeric: tabular-nums; font-weight: 600; }}
+.p-bar {{
+  flex: 1; height: 7px; border-radius: 4px; overflow: hidden;
+  background: rgba(255, 255, 255, .08);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3);
+}}
+.p-fill {{
+  height: 100%; border-radius: 4px; transition: width .4s;
+  background: linear-gradient(90deg, #34d399, #6ee7b7);
+  box-shadow: 0 0 8px rgba(52, 211, 153, .55);
+}}
+table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+th, td {{ padding: 7px 10px; text-align: left; }}
+th {{
+  color: var(--dim); font-size: 11.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid var(--glass-border);
+}}
+tbody tr + tr td {{ border-top: 1px solid rgba(255, 255, 255, .07); }}
+td {{ font-variant-numeric: tabular-nums; }}
+td.num {{ text-align: right; }}
+.tag {{
+  display: inline-block; padding: 0 8px; border-radius: 9px; font-size: 11.5px;
+  border: 1px solid transparent;
+}}
+.tag.ok {{ color: var(--ok); border-color: rgba(52, 211, 153, .5); background: rgba(52, 211, 153, .1); }}
+.tag.bad {{ color: var(--bad); border-color: rgba(248, 113, 113, .5); background: rgba(248, 113, 113, .1); }}
+.empty {{
+  margin-top: 14px; padding: 30px; text-align: center; color: var(--dim);
+  border: 1px dashed rgba(255, 255, 255, .18); border-radius: 18px;
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}}
+@media (max-width: 640px) {{ .stats {{ gap: 18px; }} }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>任务评测</h1>
+      <div class="sub">runs 目录：{_esc(state.runs_dir)} · 与 <code>aisubench report</code> 同口径</div>
+    </div>
+    <a href="/">← 返回监控面板</a>
+  </header>
+  {content}
 </div>
 </body>
 </html>

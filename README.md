@@ -67,6 +67,8 @@ python3 -m aisubench gui --port 7788
 
 页面数字与 `status` 完全同源（`collect_status` / `collect_subscriptions`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。每池 token 次级行在速率后追加 TPS（如 `TPS 4.5`）、订阅汇总行显示该订阅各池最大 TPS，均为监测口径的消耗速率换算（`rate_tph ÷ 3600`），与 bench 的生成速度 TPS_gen 不同口径；速率不可用时显示「不可用」。
 
+主面板顶部导航与 `/debug` 页均有「任务评测」入口（`/bench`）：与 `aisubench report` 完全同口径的任务评测页（复用 `load_results` 与 `task_metrics`），玻璃拟态风格展示汇总卡（任务数、通过率、总 token、tokens/task 全部/仅通过、元/task、元/有效任务）与逐 run 明细表（任务、agent、通过/失败、tokens、cached、TPS_gen、TPS_wall、耗时）；支持 `?agent=X&last=N` 过滤（同 `report --agent/--last`）。页面不带价格参数，元/task、元/有效任务显示「不可用」，需要订阅折算时用 CLI `report --price/--quota-tokens`；runs/ 为空时给出 `python3 -m aisubench batch --tier light --agent mock` 引导。
+
 主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。卡片头部另有「任务标定」按钮：确认后用该订阅绑定的 agent/probe 后台跑 calibration 档任务（真实消耗 token，上限 `[calibration].max_tasks`），结果写 `reports/calibration-<订阅>.json`，标定出的 Q 以"标定值"徽标与监测估算并列展示。
 
 样本按订阅分组：watch 采样时从 `[agents.*].subscription` 取订阅名（缺省为 agent 名），旧样本归 `default`。
@@ -109,7 +111,7 @@ aisubench/                 扁平 Python 包与 CLI
   estimate.py              池比率估计（±g 区间）、消耗速率、ETA（只读账本）
   watch.py                 持续监测采样：meter 增量 + 探针快照落账本
   status.py                持续监测状态：collect_status 结构化结果 + 中文监控表渲染
-  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample + /api/calibrate）
+  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample + /api/calibrate + /bench 任务评测页）
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针
