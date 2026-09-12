@@ -1,0 +1,3 @@
+# macOS 状态栏壳专用依赖（aisubench 核心包保持零第三方依赖）。
+# rumps 是 PyObjC 之上的菜单栏应用封装，仅 macOS 可用。
+rumps==0.4.0

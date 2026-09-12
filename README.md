@@ -63,6 +63,18 @@ python3 -m aisubench gui --port 7788
 
 页面数字与 `status` 完全同源（共用 `collect_status`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
 
+## 原生壳（macOS 状态栏）
+
+`shells/macos` 是纯原生 macOS 菜单栏监控应用（rumps）：状态栏常驻显示最紧急池的 `池名 已用%`，下拉菜单为与 `status` 同口径的各池数字。**无浏览器跳转、无 WebView、无本地 HTTP 服务**——取数靠进程内 `collect_status`，采样靠进程内 daemon 线程复用 `WatchSession`，不开端口。壳依赖（rumps）独立声明在 `shells/macos/requirements.txt`，`aisubench` 核心包保持零第三方依赖。
+
+```bash
+pip install -r shells/macos/requirements.txt
+python3 -m shells.macos --agent mock --probe mock   # 采样+展示单进程
+python3 -m shells.macos --no-sample                 # 只读账本
+```
+
+参数：`--agent/--probe`（启用采样与「立即采样」按钮，需同时提供）、`--interval`（采样间隔，默认 300s）、`--refresh`（菜单刷新，默认 30s）、`--no-sample`、`--ledger`。详见 [shells/macos/README.md](shells/macos/README.md)。
+
 ## 仓库结构
 
 ```text
@@ -81,6 +93,9 @@ aisubench/                 扁平 Python 包与 CLI
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针
+shells/                    原生壳（与核心包解耦；核心包零第三方依赖）
+  shared/viewmodel.py      壳共用视图模型：collect_status dict → 菜单行（纯函数）
+  macos/                   macOS 状态栏壳（rumps；python3 -m shells.macos）
 tasks/                     10 个确定性任务及 fixtures/verify.py/solution
 runs/                      被 git 忽略的运行 JSON 产物
 reports/                   被 git 忽略的标定 JSON 与 Markdown 报告
