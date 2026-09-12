@@ -5,7 +5,7 @@
 
 硬性约束：无浏览器跳转、无 WebView、无本地 HTTP 服务；取数靠进程内
 ``aisubench.status.collect_status``，采样靠进程内 daemon 线程
-（``shells.macos.sampler`` 复用 watch 的 ``WatchSession``）。
+（``shells.shared.sampler`` 复用 watch 的 ``WatchSession``，与 Windows 壳共用）。
 
 rumps 只在 macOS 上可用，故做惰性导入：缺 rumps 或非 darwin 时本模块仍可
 import / py_compile（Linux CI 不炸），``main`` 打印中文提示后以非零码退出。
@@ -24,7 +24,7 @@ from aisubench.watch import _resolve_path
 
 from shells.shared import viewmodel as vm
 
-from .sampler import Sampler, build_session
+from shells.shared.sampler import Sampler, build_session
 
 try:
     import rumps

@@ -1,8 +1,9 @@
-"""原生壳共用视图模型：把 ``aisubench.status.collect_status`` 的 dict 转成壳菜单行。
+"""原生壳共用视图模型：把 ``aisubench.status.collect_status`` 的 dict 转成壳展示行。
 
-纯函数、零第三方依赖（不 import rumps/AppKit），Linux 可直接单测；
-``shells/macos`` 只负责把这些行挂进 NSMenu。文案与 ``aisubench status``
-CLI 一致：不可用 / 数据不足(Δ 未超粒度) / 账本中暂无该池样本。
+纯函数、零第三方依赖（不 import rumps/AppKit/PySide6），Linux 可直接单测；
+``shells/macos`` 把这些行挂进 NSMenu，``shells/windows`` 用它们绘制悬浮球
+详情面板。文案与 ``aisubench status`` CLI 一致：不可用 /
+数据不足(Δ 未超粒度) / 账本中暂无该池样本。
 """
 
 from __future__ import annotations
@@ -22,28 +23,48 @@ _HOURS_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*h$")
 _NAMED_WINDOWS = {"week": 168.0, "w": 168.0, "month": 720.0, "mo": 720.0}
 
 
+def _urgent_pool(pools: list | None) -> dict | None:
+    """最紧急池：有 ETA 的池取最小 ETA，否则取已用%最大的池，都没有回 None。"""
+    pools = pools or []
+    with_eta = [pool for pool in pools if pool.get("eta_hours") is not None]
+    if with_eta:
+        return min(with_eta, key=lambda item: item["eta_hours"])
+    with_pct = [pool for pool in pools if pool.get("current_pct") is not None]
+    return max(with_pct, key=lambda item: item["current_pct"]) if with_pct else None
+
+
 def title_text(status: dict | None) -> str:
-    """菜单栏标题：有 ETA 的池取最小 ETA，否则取已用%最大的池，都没有回 APP_TITLE。
+    """菜单栏标题：最紧急池（``_urgent_pool``）的 ``池名 已用%``，无池回 APP_TITLE。
 
     格式如 ``"5h 46%"``。
     """
-    pools = (status or {}).get("pools") or []
-    with_eta = [pool for pool in pools if pool.get("eta_hours") is not None]
-    if with_eta:
-        pool = min(with_eta, key=lambda item: item["eta_hours"])
-    else:
-        with_pct = [pool for pool in pools if pool.get("current_pct") is not None]
-        if not with_pct:
-            return APP_TITLE
-        pool = max(with_pct, key=lambda item: item["current_pct"])
+    pool = _urgent_pool((status or {}).get("pools"))
+    if pool is None:
+        return APP_TITLE
     pct = pool.get("current_pct")
     if pct is None:
         return str(pool.get("name") or APP_TITLE)
     return f"{pool['name']} {pct:.0f}%"
 
 
+def ball_view(status: dict | None) -> dict:
+    """悬浮球面视图：最紧急池（与 ``title_text`` 同口径）的紧凑文案与告警级别。
+
+    返回 ``{"text", "level"}``：text 形如 ``"86%"``；选中的池无读数时为
+    ``"--"``，无池/空状态为 ``"—"``；level 为该池 ``_level`` 结果
+    （``normal`` / ``warn`` / ``critical``，无池为 ``"none"``），供壳层映射
+    球体颜色。
+    """
+    pool = _urgent_pool((status or {}).get("pools"))
+    if pool is None:
+        return {"text": "—", "level": "none"}
+    pct = pool.get("current_pct")
+    return {"text": "--" if pct is None else f"{pct:.0f}%",
+            "level": _level(pool)}
+
+
 def pool_rows(status: dict | None) -> list[dict]:
-    """每池一行 {title, detail, level}；空账本（ledger 缺失或 n_samples=0）返回空。
+    """每池一行 {title, detail, level, pct}；空账本（ledger 缺失或 n_samples=0）返回空。
 
     - title 形如 ``"5h · 已用 46%"``（字段缺失显示「不可用」）；
     - detail 第一行为「已用≈tokens · Q(低–高)」，第二行为「速率 · ETA」；
@@ -88,11 +109,12 @@ def _pool_row(pool: dict) -> dict:
     pct = pool.get("current_pct")
     title = f"{name} · 已用 {'不可用' if pct is None else f'{pct:.0f}%'}"
     if not pool.get("has_samples"):
-        return {"title": title, "detail": "账本中暂无该池样本", "level": "normal"}
+        return {"title": title, "detail": "账本中暂无该池样本",
+                "level": "normal", "pct": pct}
     used = pool.get("used_tokens")
     used_text = "已用≈不可用" if used is None else f"已用≈{used:,.0f}"
     detail = f"{used_text} · {_quota_text(pool)}\n{_rate_text(pool)} · {_eta_text(pool)}"
-    return {"title": title, "detail": detail, "level": _level(pool)}
+    return {"title": title, "detail": detail, "level": _level(pool), "pct": pct}
 
 
 def _quota_text(pool: dict) -> str:

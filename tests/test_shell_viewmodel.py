@@ -80,6 +80,7 @@ class PoolRowTests(unittest.TestCase):
         self.assertIn("速率 4,304 tok/h", row["detail"])
         self.assertIn("ETA 56.4 h", row["detail"])
         self.assertEqual(row["level"], "normal")
+        self.assertEqual(row["pct"], 46.065)
 
     def test_available_false_wording(self):
         st = status([pool("5h", available=False, quota_tokens=None,

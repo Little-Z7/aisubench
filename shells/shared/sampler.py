@@ -1,8 +1,11 @@
-"""进程内采样线程：daemon 循环复用 ``aisubench.watch`` 的 ``WatchSession``。
+"""壳共用进程内采样线程：daemon 循环复用 ``aisubench.watch`` 的 ``WatchSession``。
 
-采样会话的构造口径与 ``aisubench gui`` 一致（meter/log_path、offsets、
-clean 阈值都从 ``aisubench.toml`` 的 ``[watch]`` / ``[agents.*]`` 解析）。
-周期循环与「立即采样」共用一把锁防重入；单轮异常打印警告后继续，不崩溃。
+由 ``shells/macos`` 与 ``shells/windows`` 共用。采样会话的构造口径与
+``aisubench gui`` 一致（meter/log_path、offsets、clean 阈值都从
+``aisubench.toml`` 的 ``[watch]`` / ``[agents.*]`` 解析）。周期循环与
+「立即采样」共用一把锁防重入；单轮异常打印警告后继续，不崩溃。
+
+仅依赖标准库与 aisubench 核心包，无原生 GUI 依赖，Linux CI 可直接 import。
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ class Sampler:
     """周期采样守护线程 + 带锁单次采样（防重入）。
 
     ``start()`` 起 daemon 线程每 ``interval`` 秒采样一次；``sample_now()``
-    供菜单「立即采样」调用，在后台短线程执行、不阻塞 UI 主线程，采样进行中
+    供壳层「立即采样」调用，在后台短线程执行、不阻塞 UI 主线程，采样进行中
     重复触发会被忽略。
     """
 

@@ -13,6 +13,16 @@
 - ``POST /api/sample`` 立即采样一次（复用 watch 的 ``WatchSession.sample_once``，
                        启动时需传 ``--agent/--probe``，否则返回 403 且按钮置灰；
                        与后台采样线程共用一把锁防并发重入，重入返回 409）；
+- ``POST /api/calibrate`` 为指定订阅启动一次「任务标定」，body 为
+                       ``{"subscription": "<订阅名>"}``：用该订阅在
+                       ``[subscriptions.*]`` 绑定的 agent 与 probe 复用
+                       ``calibrate.calibrate_plan`` 跑 calibration 档任务
+                       （真实消耗订阅 token），结果写
+                       ``reports/calibration-<订阅>.json``；标定在后台线程执行，
+                       同一订阅重入返回 409，订阅未绑定可运行 agent/probe 返回 400；
+- ``GET /api/calibrate?subscription=X`` 查询该订阅标定状态
+                       （running/done/error + 已完成任务数/总任务数）；标定出的 Q
+                       会并入 ``/api/status`` 的池 dict（calibrated_q 等字段）；
 - ``POST /api/alerts`` 设置「额度恢复时提醒我」开关，body 为
                        ``{"key": "<订阅>.<池>", "enabled": true|false}``，
                        持久化到 ``state/alerts.json``（``[watch].alerts_file``
@@ -38,9 +48,12 @@ import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .alerts import ALERTS_FILE, load_alerts, set_alert
-from .config import load_config
+from .calibrate import calibrate_plan, calibration_report_path
+from .config import ROOT, load_config
+from .runner import Runner
 from .ledger import DEFAULT_LEDGER
 from .status import (DEFAULT_WINDOW_HOURS, collect_status,
                      collect_subscriptions)
@@ -58,7 +71,9 @@ class GuiState:
                  window_hours: float, clean_only: bool = False,
                  session: WatchSession | None = None,
                  sample_interval_sec: float | None = None,
-                 debug: bool = False):
+                 debug: bool = False,
+                 runner: Runner | None = None,
+                 reports_dir: str | Path | None = None):
         self.config = config
         self.ledger_path = Path(ledger_path)
         self.window_hours = float(window_hours)
@@ -71,6 +86,12 @@ class GuiState:
         # 「额度恢复时提醒我」开关的持久化文件（[watch].alerts_file 可覆盖）。
         self.alerts_path = _resolve_path(
             (config.get("watch") or {}).get("alerts_file"), ALERTS_FILE)
+        # 任务标定：runner/reports_dir 可注入便于测试；calibrations 为
+        # {订阅名: 状态机 dict}，calibration_lock 保护其读写与防重入判定。
+        self.runner = runner
+        self.reports_dir = Path(reports_dir) if reports_dir else ROOT / "reports"
+        self.calibrations: dict[str, dict] = {}
+        self.calibration_lock = threading.Lock()
 
     def status_payload(self) -> dict:
         """collect_subscriptions 分组结果 + 面板辅助字段（服务时间/采样开关/提醒开关）。"""
@@ -87,6 +108,7 @@ class GuiState:
         status["stale"] = bool(
             last is not None and self.sample_interval_sec
             and status["server_time"] - last > 3 * self.sample_interval_sec)
+        self._attach_calibration(status)
         return status
 
     def set_alert(self, key: str, enabled: bool) -> dict:
@@ -106,6 +128,109 @@ class GuiState:
         finally:
             self.sample_lock.release()
         return 200, {"ok": True, "sample": sample}
+
+    def try_calibrate(self, subscription) -> tuple[int, dict]:
+        """为订阅启动后台标定。返回 (HTTP 状态码, 响应体)；同订阅重入 409。"""
+        name = str(subscription or "").strip()
+        if not name:
+            return 400, {"ok": False, "error": "需要 {\"subscription\": \"<订阅名>\"}"}
+        subs = self.config.get("subscriptions") or {}
+        if name not in subs:
+            return 400, {"ok": False,
+                         "error": f"未知订阅：{name}（请在 aisubench.toml 的 "
+                                  f"[subscriptions.{name}] 中声明 agent/probe）"}
+        sub_cfg = subs.get(name) or {}
+        agent = str(sub_cfg.get("agent") or "").strip()
+        probe_name = str(sub_cfg.get("probe") or "").strip()
+        if not agent:
+            return 400, {"ok": False,
+                         "error": f"订阅 {name} 未绑定 agent，无法标定"
+                                  f"（配置 [subscriptions.{name}].agent）"}
+        agents_cfg = self.config.get("agents") or {}
+        if agent not in ("mock", "api") \
+                and not (agents_cfg.get(agent) or {}).get("command"):
+            return 400, {"ok": False,
+                         "error": f"订阅 {name} 绑定的 agent {agent} 没有可运行配置"
+                                  f"（[agents.{agent}].command）"}
+        if probe_name not in PROBES:
+            return 400, {"ok": False,
+                         "error": f"订阅 {name} 未配置可用探针"
+                                  f"（[subscriptions.{name}].probe，可选 "
+                                  f"{' / '.join(sorted(PROBES))}）"}
+        with self.calibration_lock:
+            job = self.calibrations.get(name)
+            if job and job["state"] == "running":
+                return 409, {"ok": False,
+                             "error": f"订阅 {name} 标定进行中，请稍候",
+                             "status": dict(job)}
+            self.calibrations[name] = {
+                "state": "running", "done_tasks": 0, "total_tasks": None,
+                "error": None, "started_at": time.time(), "finished_at": None,
+            }
+            status = dict(self.calibrations[name])
+        threading.Thread(target=self._calibrate_worker,
+                         args=(name, agent, probe_name), daemon=True).start()
+        return 202, {"ok": True, "subscription": name, "status": status}
+
+    def calibration_status(self, subscription: str) -> dict:
+        """GET /api/calibrate 的状态查询：无记录时 state=idle（仍 200）。"""
+        name = str(subscription or "").strip()
+        with self.calibration_lock:
+            job = self.calibrations.get(name)
+            status = dict(job) if job else {"state": "idle"}
+        return {"ok": True, "subscription": name, **status}
+
+    def _calibrate_worker(self, name: str, agent: str, probe_name: str) -> None:
+        """后台线程：跑标定并维护 calibrations[name] 状态机。"""
+        job = self.calibrations[name]
+
+        def progress(done: int, total: int) -> None:
+            with self.calibration_lock:
+                job["done_tasks"], job["total_tasks"] = done, total
+
+        try:
+            result = calibrate_plan(
+                self.config, name, PROBES[probe_name](), agent=agent,
+                runner=self.runner or Runner(config=self.config),
+                reports_dir=self.reports_dir, progress=progress)
+        except Exception as exc:
+            with self.calibration_lock:
+                job["state"] = "error"
+                job["error"] = str(exc)
+                job["finished_at"] = time.time()
+            return
+        with self.calibration_lock:
+            job["state"] = "done"
+            job["finished_at"] = time.time()
+            job["result"] = {"tasks": result["tasks"], "tokens": result["tokens"],
+                             "windows": result["windows"]}
+
+    def _attach_calibration(self, status: dict) -> None:
+        """把每个订阅最新标定结果并入其池 dict：calibrated_q / calibrated_at 等。"""
+        for sub in status.get("subscriptions") or []:
+            report = _load_calibration(self.reports_dir, sub.get("name"))
+            if report is None:
+                continue
+            data, mtime = report
+            windows = {str(w.get("name")): w
+                       for w in data.get("windows") or [] if isinstance(w, dict)}
+            for pool in sub.get("pools") or []:
+                window = windows.get(str(pool.get("name")))
+                if not window:
+                    continue
+                pool["calibrated_q"] = window.get("quota_tokens")
+                pool["calibrated_q_low"] = window.get("q_lower")
+                pool["calibrated_q_high"] = window.get("q_upper")
+                pool["calibrated_at"] = mtime
+
+
+def _load_calibration(reports_dir: Path, subscription) -> tuple[dict, float] | None:
+    """读 ``reports/calibration-<订阅>.json``，返回 (数据, 文件 mtime)；缺失/损坏 → None。"""
+    path = calibration_report_path(subscription, reports_dir)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), path.stat().st_mtime
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -134,6 +259,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                        _debug_page(self.server.state))
         elif path == "/api/status":
             self._send_json(200, self.server.state.status_payload())
+        elif path == "/api/calibrate":
+            query = parse_qs(urlparse(self.path).query)
+            name = (query.get("subscription") or [""])[0]
+            self._send_json(200, self.server.state.calibration_status(name))
         else:
             self._send_json(404, {"ok": False, "error": "未知路径"})
 
@@ -142,6 +271,12 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/sample":
             code, body = self.server.state.try_sample()
             self._send_json(code, body)
+            return
+        if path == "/api/calibrate":
+            body = self._read_json() or {}
+            code, payload = self.server.state.try_calibrate(
+                body.get("subscription"))
+            self._send_json(code, payload)
             return
         if path == "/api/alerts":
             body = self._read_json()

@@ -12,7 +12,7 @@ from .quota.manual import ManualQuotaProbe
 from .quota.mock import MockQuotaProbe
 from .report import write_report
 from .runner import Runner
-from .status import run_status
+from .status import collect_subscriptions, run_status
 from .task import list_tasks, load_task
 from .watch import run_watch
 
@@ -52,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="消耗速率窗口小时数（默认 24，右端=该池最新样本）")
     status.add_argument("--clean-only", dest="clean_only", action="store_true",
                         help="只用 clean 样本估计与计速率，排除未观测渠道污染")
+    status.add_argument("--json", action="store_true",
+                        help="输出 collect_subscriptions 的结构化 JSON，不渲染文本表")
     gui = sub.add_parser("gui", help="本地 Web 监控面板（只绑 127.0.0.1，可选进程内采样）")
     gui.add_argument("--port", type=int, default=7788, help="监听端口（默认 7788）")
     gui.add_argument("--window-hours", dest="window_hours", type=float,
@@ -126,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
             return run_watch(args.agent, args.probe, once=args.once,
                              interval=args.interval, ledger=args.ledger)
         if args.command == "status":
+            if args.json:
+                data = collect_subscriptions(load_config(), ledger=args.ledger,
+                                             window_hours=args.window_hours,
+                                             clean_only=args.clean_only)
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+                return 0
             return run_status(ledger=args.ledger, window_hours=args.window_hours,
                               clean_only=args.clean_only)
         if args.command == "gui":

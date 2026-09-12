@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import tempfile
 from unittest import mock
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
+from aisubench import cli as cli_module
 from aisubench import status as status_module
 from aisubench.cli import main
 from aisubench.ledger import append_sample
@@ -360,6 +362,7 @@ class StatusCliTests(unittest.TestCase):
     def run_cli(self, argv):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(status_module, "load_config", lambda *a, **k: CONFIG), \
+                mock.patch.object(cli_module, "load_config", lambda *a, **k: CONFIG), \
                 redirect_stdout(out), redirect_stderr(err):
             rc = main(argv)
         return rc, out.getvalue(), err.getvalue()
@@ -377,6 +380,26 @@ class StatusCliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("2,500 tok/h", out)
         self.assertIn("18.8", out)
+
+    def test_cli_json_outputs_parseable_collect_subscriptions(self):
+        rc, out, _ = self.run_cli(["status", "--ledger", str(self.ledger),
+                                   "--json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertIn("subscriptions", data)
+        self.assertIn("n_samples", data)
+        sub = {s["name"]: s for s in data["subscriptions"]}["demo"]
+        pool = {p["name"]: p for p in sub["pools"]}["5h"]
+        self.assertEqual(pool["current_pct"], 6.0)
+
+    def test_cli_json_combines_with_window_hours_and_clean_only(self):
+        rc, out, _ = self.run_cli(["status", "--ledger", str(self.ledger),
+                                   "--json", "--window-hours", "1",
+                                   "--clean-only"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["window_hours"], 1.0)
+        self.assertTrue(data["clean_only"])
 
     def test_cli_nonpositive_window_is_error(self):
         rc, _, err = self.run_cli(["status", "--ledger", str(self.ledger),

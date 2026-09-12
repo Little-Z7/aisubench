@@ -39,7 +39,11 @@ class Runner:
         agent_stdout = ""
         agent_stderr = ""
         usage = Usage()
-        meter = self._meter(agent)
+        try:
+            meter = self._meter(agent)
+        except Exception:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise
         try:
             if task.fixtures_dir.exists():
                 shutil.copytree(task.fixtures_dir, workspace, dirs_exist_ok=True)

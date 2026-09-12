@@ -28,6 +28,10 @@ from .metrics import total_tokens
 
 _META_KEY = "_meta"
 
+# burn_rate 的最小样本跨度：亚秒级间隔会放大出几十万 tok/h 的伪速率，
+# 跨度不足该值视为数据不足（返回 None）。
+MIN_RATE_SPAN_SEC = 60.0
+
 
 def estimate_pools(samples: list[dict], granularity_pct: float = 1.0,
                    clean_only: bool = False) -> dict[str, dict]:
@@ -87,8 +91,10 @@ def burn_rate(samples: list[dict], pool: str, window_hours: float) -> float | No
     """最近 window_hours 内该池对应样本的平均消耗速率（tokens/小时）。
 
     以全部含该池的样本中最新的 ts 为窗口右端；窗口内样本少于 2 个、
-    或时间跨度为 0（含窗口非正）时返回 None。速率 = 窗口内样本的
-    token 增量之和 ÷ 实际时间跨度，因此不依赖固定采样间隔。
+    或时间跨度小于 MIN_RATE_SPAN_SEC（60 秒，含窗口非正与跨度为 0）
+    时返回 None——亚秒级跨度会把速率放大成天文数字伪值，视为数据不足。
+    速率 = 窗口内样本的 token 增量之和 ÷ 实际时间跨度，因此不依赖
+    固定采样间隔。
     """
     window = _number(window_hours)
     if not pool or window is None or window <= 0:
@@ -106,7 +112,7 @@ def burn_rate(samples: list[dict], pool: str, window_hours: float) -> float | No
     if len(selected) < 2:
         return None
     span = max(stamp for stamp, _ in selected) - min(stamp for stamp, _ in selected)
-    if span <= 0:
+    if span < MIN_RATE_SPAN_SEC:
         return None
     return sum(tokens for _, tokens in selected) / (span / 3600.0)
 

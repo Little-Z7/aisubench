@@ -7,14 +7,17 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from aisubench import gui as gui_module
 from aisubench.gui import GuiState, build_server, run_gui
 from aisubench.ledger import append_sample, load_samples
+from aisubench.runner import Runner
 from aisubench.watch import WatchSession
 
 CONFIG = {"subscriptions": {"demo": {"pools": ["5h"]}},
@@ -366,6 +369,150 @@ class AlertApiTests(unittest.TestCase):
         self.assertEqual(pool["current_pct"], 12.0)
         self.assertTrue(pool["current_pct"] < pool["prev_pct"])
         self.assertTrue(data["alerts"]["default.5h"])
+
+
+CAL_CONFIG = {
+    "subscriptions": {
+        "demo": {"agent": "mock", "probe": "mock", "pools": ["5h"]},
+        "noagent": {"probe": "mock", "pools": ["5h"]},
+        "badagent": {"agent": "ghost", "probe": "mock", "pools": ["5h"]},
+        "badprobe": {"agent": "mock", "probe": "nope", "pools": ["5h"]},
+    },
+    "calibration": {"max_tasks": 2, "granularity_pct": 1.0},
+    "watch": {"interval_sec": 300},
+}
+
+
+class BlockingCalProbe:
+    """首次 snapshot 阻塞到 release，用于 POST /api/calibrate 防重入测试。"""
+
+    continuous = True
+    last = None
+
+    def __init__(self):
+        BlockingCalProbe.last = self
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    def snapshot(self):
+        self.calls += 1
+        if self.calls == 1:
+            self.entered.set()
+            self.release.wait(timeout=10)
+        return {"5h": 10.0 + self.calls}
+
+
+class FailingCalProbe:
+    continuous = True
+
+    def snapshot(self):
+        raise RuntimeError("探针爆炸")
+
+
+class CalibrateApiTests(unittest.TestCase):
+    """任务标定：POST /api/calibrate 后台标定 + GET 状态 + 结果并入 /api/status。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ledger = self.root / "ledger.jsonl"
+        self.reports = self.root / "reports"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def make_state(self, config=None, **kwargs):
+        cfg = config or CAL_CONFIG
+        cfg = {**cfg, "watch": {**(cfg.get("watch") or {}),
+                                "alerts_file": str(self.root / "alerts.json")}}
+        return GuiState(config=cfg, ledger_path=self.ledger, window_hours=24.0,
+                        runner=Runner(runs_dir=self.root / "runs", config=cfg),
+                        reports_dir=self.reports, **kwargs)
+
+    def wait_done(self, fix, name="demo", timeout=30):
+        deadline = time.time() + timeout
+        while True:
+            body = json.loads(
+                fix.get(f"/api/calibrate?subscription={name}").read())
+            if body["state"] != "running":
+                return body
+            self.assertLess(time.time(), deadline, "标定超时未完成")
+            time.sleep(0.1)
+
+    def test_calibrate_runs_to_done_and_merges_status(self):
+        with ServerFixture(self.make_state()) as fix:
+            response = fix.post("/api/calibrate", {"subscription": "demo"})
+            self.assertEqual(response.status, 202)
+            body = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["status"]["state"], "running")
+            # 状态查询：无记录订阅为 idle
+            idle = json.loads(
+                fix.get("/api/calibrate?subscription=nobody").read())
+            self.assertEqual(idle["state"], "idle")
+            done = self.wait_done(fix)
+            self.assertEqual(done["state"], "done")
+            self.assertIsNone(done["error"])
+            self.assertEqual(done["done_tasks"], 2)
+            self.assertEqual(done["total_tasks"], 2)
+            self.assertEqual(done["result"]["tasks"], 2)
+            # 报告落盘 reports/calibration-demo.json
+            report_path = self.reports / "calibration-demo.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["plan"], "demo")
+            self.assertEqual(report["tasks"], 2)
+            self.assertGreater(report["tokens"], 0)
+            window = next(w for w in report["windows"] if w["name"] == "5h")
+            # /api/status 池 dict 并入标定字段
+            payload = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        pool = subs_by_name(payload)["demo"]["pools"][0]
+        self.assertEqual(pool["calibrated_q"], window["quota_tokens"])
+        self.assertEqual(pool["calibrated_at"], report_path.stat().st_mtime)
+
+    def test_calibrate_reentrant_returns_409(self):
+        config = {**CAL_CONFIG,
+                  "subscriptions": {"demo": {"agent": "mock", "probe": "block",
+                                             "pools": ["5h"]}}}
+        with mock.patch.dict(gui_module.PROBES, {"block": BlockingCalProbe}):
+            with ServerFixture(self.make_state(config)) as fix:
+                response = fix.post("/api/calibrate", {"subscription": "demo"})
+                self.assertEqual(response.status, 202)
+                probe = BlockingCalProbe.last
+                self.assertTrue(probe.entered.wait(timeout=5))
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    fix.post("/api/calibrate", {"subscription": "demo"})
+                self.assertEqual(ctx.exception.code, 409)
+                body = json.loads(ctx.exception.read().decode("utf-8"))
+                self.assertFalse(body["ok"])
+                self.assertEqual(body["status"]["state"], "running")
+                probe.release.set()
+                self.assertEqual(self.wait_done(fix)["state"], "done")
+
+    def test_calibrate_probe_failure_marks_error(self):
+        config = {**CAL_CONFIG,
+                  "subscriptions": {"demo": {"agent": "mock", "probe": "fail",
+                                             "pools": ["5h"]}}}
+        with mock.patch.dict(gui_module.PROBES, {"fail": FailingCalProbe}):
+            with ServerFixture(self.make_state(config)) as fix:
+                fix.post("/api/calibrate", {"subscription": "demo"})
+                body = self.wait_done(fix)
+                self.assertEqual(body["state"], "error")
+                self.assertIn("探针爆炸", body["error"])
+
+    def test_calibrate_bad_requests_400(self):
+        with ServerFixture(self.make_state()) as fix:
+            for body in ({"subscription": "ghost"},   # 未声明的订阅
+                         {"subscription": "noagent"},  # 无 agent 绑定
+                         {"subscription": "badagent"},  # agent 无可运行配置
+                         {"subscription": "badprobe"},  # probe 未知
+                         {}, None, {"subscription": "  "}):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    fix.post("/api/calibrate", body)
+                self.assertEqual(ctx.exception.code, 400, body)
+                payload = json.loads(ctx.exception.read().decode("utf-8"))
+                self.assertFalse(payload["ok"])
+                self.assertTrue(payload["error"])
 
 
 class RunGuiArgTests(unittest.TestCase):

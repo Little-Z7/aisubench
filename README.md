@@ -51,6 +51,7 @@ python3 -m aisubench gui --port 7788
 - `--ledger PATH`：账本路径，缺省取 `aisubench.toml` 的 `[watch].ledger`（默认 `state/ledger.jsonl`）。
 - `--window-hours N`：消耗速率窗口小时数，默认 24（窗口右端=该池最新样本）。
 - `--clean-only`：比率估计与速率只用 `clean=true` 的样本，排除网页/手机端等未观测渠道的污染。
+- `--json`：把 `collect_subscriptions` 的结构化 dict 原样输出为 JSON（不渲染文本表），供原生壳 / 外部工具桥接消费。
 
 `[subscriptions.*].pools` 声明的池会排在表首，账本里还没出现该池样本时单独标注"账本中暂无该池样本"。
 
@@ -64,7 +65,7 @@ python3 -m aisubench gui --port 7788
 
 页面数字与 `status` 完全同源（`collect_status` / `collect_subscriptions`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
 
-主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。
+主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。卡片头部另有「任务标定」按钮：确认后用该订阅绑定的 agent/probe 后台跑 calibration 档任务（真实消耗 token，上限 `[calibration].max_tasks`），结果写 `reports/calibration-<订阅>.json`，标定出的 Q 以"标定值"徽标与监测估算并列展示。
 
 样本按订阅分组：watch 采样时从 `[agents.*].subscription` 取订阅名（缺省为 agent 名），旧样本归 `default`。
 
@@ -80,6 +81,18 @@ python3 -m shells.macos --no-sample                 # 只读账本
 
 参数：`--agent/--probe`（启用采样与「立即采样」按钮，需同时提供）、`--interval`（采样间隔，默认 300s）、`--refresh`（菜单刷新，默认 30s）、`--no-sample`、`--ledger`。详见 [shells/macos/README.md](shells/macos/README.md)。
 
+## 原生壳（Windows 悬浮球）
+
+`shells/windows` 是纯原生 Windows 桌面悬浮球（PySide6）：无边框置顶半透明圆球常驻桌面，球面显示最紧急池已用%；左键点击展开/收起详情面板（原生绘制各池进度条、已用≈tok、Q 估算、速率、ETA、告警色），球可拖拽移动并记忆位置，右键菜单「立即采样 / 退出」。与 macOS 壳同一约束：**无浏览器、无 WebView、无本地 HTTP 服务**，取数进程内 `collect_status`，采样与 macOS 壳共用 `shells/shared/sampler.py`。
+
+```bash
+pip install -r shells/windows/requirements.txt
+python3 -m shells.windows --agent mock --probe mock
+python3 -m shells.windows --no-sample
+```
+
+详见 [shells/windows/README.md](shells/windows/README.md)。
+
 ## 仓库结构
 
 ```text
@@ -94,7 +107,7 @@ aisubench/                 扁平 Python 包与 CLI
   estimate.py              池比率估计（±g 区间）、消耗速率、ETA（只读账本）
   watch.py                 持续监测采样：meter 增量 + 探针快照落账本
   status.py                持续监测状态：collect_status 结构化结果 + 中文监控表渲染
-  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample）
+  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample + /api/calibrate）
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针

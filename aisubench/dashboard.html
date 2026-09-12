@@ -94,6 +94,22 @@ a:hover { text-decoration: underline; }
 .sub-src { color: var(--dim); font-size: 12px; margin-top: 1px; }
 .sub-updated { color: var(--dim); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
 
+/* 任务标定按钮 + 标定值徽标 */
+.cal-btn { flex: none; padding: 5px 12px; font-size: 12px; border-radius: 9px; }
+.cal-btn .spin {
+  display: inline-block; width: 10px; height: 10px; margin-right: 5px;
+  vertical-align: -1px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .25); border-top-color: #fff;
+  animation: cal-rot .8s linear infinite;
+}
+@keyframes cal-rot { to { transform: rotate(360deg); } }
+.calib-badge {
+  display: inline-block; padding: 0 8px; border-radius: 9px; font-size: 11px;
+  color: #fff; border: 1px solid transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 0 10px rgba(110, 168, 255, .4);
+}
+
 /* 池行：主行（池名/进度条/%/ETA/铃铛）+ token 次级行 */
 .pool-rows { margin-top: 14px; display: flex; flex-direction: column; gap: 13px; }
 .pool-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
@@ -279,6 +295,14 @@ function poolTokenRow(p) {
       : lo !== null ? ` <span class="rng">(≥${lo})</span>` : "";
     parts.push(`<span class="t">Q ≈ <b>${q === null ? "—" : q}</b>${rng}</span>`);
   }
+  // 任务标定产出的 Q：与监测估算并列展示（徽标 + 悬停显示标定时间），不互相覆盖
+  if (p.calibrated_q !== null && p.calibrated_q !== undefined) {
+    const when = p.calibrated_at
+      ? new Date(p.calibrated_at * 1000).toLocaleString("zh-CN", {hour12: false})
+      : "未知";
+    parts.push(`<span class="t"><span class="calib-badge" `
+      + `title="任务标定时间：${esc(when)}">标定值 Q ≈ ${tok(p.calibrated_q)}</span></span>`);
+  }
   parts.push(p.rate_tph === null || p.rate_tph === undefined
     ? `<span class="t unavail">速率：不可用</span>`
     : `<span class="t"><b>${tok(p.rate_tph)}</b> tok/h</span>`);
@@ -322,6 +346,43 @@ function subTotalRow(sub) {
   </div>`;
 }
 
+// 进行中的标定任务：sub 名 → {state, done_tasks, total_tasks, error}
+const calibJobs = {};
+
+function calBtnHtml(sub) {
+  const j = calibJobs[sub.name];
+  if (j && j.state === "running") {
+    const prog = j.total_tasks ? ` ${j.done_tasks || 0}/${j.total_tasks} 任务` : "";
+    return `<button class="cal-btn" data-sub="${esc(sub.name)}" disabled>`
+      + `<span class="spin"></span>标定中${prog}</button>`;
+  }
+  return `<button class="cal-btn" data-sub="${esc(sub.name)}" `
+    + `title="跑一组标定任务，主动计算该订阅的额度当量（会真实消耗 token）">任务标定</button>`;
+}
+
+async function pollCalibrate(sub) {
+  try {
+    const res = await fetch(
+      `/api/calibrate?subscription=${encodeURIComponent(sub)}`,
+      {cache: "no-store"});
+    if (!res.ok) return;
+    const body = await res.json();
+    calibJobs[sub] = body;
+    if (body.state === "running") {
+      refresh();
+      setTimeout(() => pollCalibrate(sub), 1500);
+    } else if (body.state === "done") {
+      toast(`「${sub}」任务标定完成`);
+      refresh();
+    } else if (body.state === "error") {
+      toast(`「${sub}」任务标定失败：${body.error || "未知错误"}`);
+      refresh();
+    }
+  } catch (e) {
+    toast("标定状态查询失败：" + e);
+  }
+}
+
 function subCard(sub, alerts) {
   const title = sub.label || sub.name;
   const acct = sub.account ? ` <span class="acct">(${esc(sub.account)})</span>` : "";
@@ -338,6 +399,7 @@ function subCard(sub, alerts) {
         <div class="sub-title">${esc(title)}${acct}</div>
         <div class="sub-src">${esc(sub.agent)} · ${esc(sub.host)}</div>
       </div>
+      ${calBtnHtml(sub)}
       <div class="sub-updated">${updated}</div>
     </div>
     ${pools}
@@ -455,6 +517,30 @@ $("#sample-btn").addEventListener("click", async () => {
 });
 
 $("#subs").addEventListener("click", async ev => {
+  const calBtn = ev.target.closest(".cal-btn");
+  if (calBtn) {
+    const sub = calBtn.dataset.sub;
+    if (!confirm(`任务标定会真实调用「${sub}」绑定的 agent 跑一组标定任务，`
+                 + "消耗该订阅的 token 额度。确认开始？")) return;
+    try {
+      const res = await fetch("/api/calibrate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({subscription: sub}),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast(`标定启动失败：${body.error || res.status}`);
+        return;
+      }
+      calibJobs[sub] = body.status || {state: "running"};
+      refresh();
+      setTimeout(() => pollCalibrate(sub), 800);
+    } catch (e) {
+      toast("标定请求失败：" + e);
+    }
+    return;
+  }
   const bell = ev.target.closest(".bell");
   if (!bell) return;
   const key = bell.dataset.key;

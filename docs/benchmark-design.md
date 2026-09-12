@@ -62,7 +62,9 @@ status.collect_subscriptions（按订阅分组）──► gui 订阅卡片 / st
 
 ### 原生壳（shells/macos）
 
-`shells/macos` 是 macOS 状态栏监控应用（rumps，`python3 -m shells.macos`）：菜单栏标题显示最紧急池的 `池名 已用%`，下拉菜单 = 头部信息行 + 每池「已用≈tokens · Q(低–高) / 速率 · ETA」+「立即采样 / 重新读取 / 退出」。**硬性约束：无浏览器跳转、无 WebView、无本地 HTTP 服务**——与 `gui` 的 HTTP 面板路线刻意分开：取数进程内调 `collect_status`（数字与 CLI `status` 完全同源），采样进程内 daemon 线程复用 `WatchSession.sample_once`（与后台循环共用一把锁防重入，瞬时异常打印警告后继续），不开任何端口。`--no-sample` 时只读账本、「立即采样」置灰；最后采样距今超过 30 分钟时头部追加「数据陈旧」。文案沿用 CLI 口径：不可用 / 数据不足(Δ 未超粒度) / 账本中暂无该池样本。
+`shells/macos` 是 macOS 状态栏监控应用（rumps，`python3 -m shells.macos`）：菜单栏标题显示最紧急池的 `池名 已用%`，下拉菜单 = 头部信息行 + 每池「已用≈tokens · Q(低–高) / 速率 · ETA」+「立即采样 / 重新读取 / 退出」。**硬性约束：无浏览器跳转、无 WebView、无本地 HTTP 服务**——与 `gui` 的 HTTP 面板路线刻意分开：取数进程内调 `collect_status`（数字与 CLI `status` 完全同源），采样进程内 daemon 线程复用 `shells/shared/sampler.py` 的 `WatchSession.sample_once` 封装（与后台循环共用一把锁防重入，瞬时异常打印警告后继续），不开任何端口。`--no-sample` 时只读账本、「立即采样」置灰；最后采样距今超过 30 分钟时头部追加「数据陈旧」。文案沿用 CLI 口径：不可用 / 数据不足(Δ 未超粒度) / 账本中暂无该池样本。
+
+`shells/windows` 是同一模式的 Windows 悬浮球（PySide6，`python3 -m shells.windows`）：无边框置顶圆球显示最紧急池已用%，点击展开原生绘制详情面板，拖拽记忆位置，右键「立即采样 / 退出」。两壳共享 `shells/shared/viewmodel.py`（展示数据）与 `shells/shared/sampler.py`（采样），只为平台差异保留各自的薄壳；壳依赖均独立声明在各自 requirements.txt，核心包零依赖。CLI 另提供 `status --json` 输出 `collect_subscriptions` 结构化 dict，作为未来 Swift 壳等外部前端的桥接。
 
 壳与核心包的依赖方向单向：`shells/shared/viewmodel.py` 是把 `collect_status` dict 渲染成菜单行的纯函数层（零第三方依赖，Linux 可单测），`shells/macos/app.py` 对 rumps 做惰性导入（缺 rumps 或非 darwin 时模块仍可 import，入口打印中文提示退出）；rumps 只声明在 `shells/macos/requirements.txt`，`aisubench/` 核心包保持纯标准库。
 

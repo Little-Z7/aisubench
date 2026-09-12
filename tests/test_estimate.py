@@ -202,6 +202,22 @@ class BurnRateTests(unittest.TestCase):
                    sample(0, {"5h": 1}, {"input": 1})]
         self.assertIsNone(burn_rate(samples, "5h", 1.0))
 
+    def test_subsecond_span_returns_none_instead_of_astronomical_rate(self):
+        samples = [sample(1000.0, {"5h": 0}, {"input": 1}),
+                   sample(1000.5, {"5h": 1}, {"input": 100})]
+        self.assertIsNone(burn_rate(samples, "5h", 1.0))
+
+    def test_span_below_min_span_returns_none(self):
+        samples = [sample(0, {"5h": 0}, {"input": 1}),
+                   sample(59.9, {"5h": 1}, {"input": 100})]
+        self.assertIsNone(burn_rate(samples, "5h", 1.0))
+
+    def test_span_at_min_span_boundary_is_computed(self):
+        samples = [sample(0, {"5h": 0}, {"input": 1}),
+                   sample(60, {"5h": 1}, {"input": 100})]
+        # 60 秒整可用：101 tokens ÷ (60/3600)h = 6060 tok/h。
+        self.assertAlmostEqual(burn_rate(samples, "5h", 1.0), 6060.0)
+
     def test_unknown_pool_or_nonpositive_window_returns_none(self):
         samples = [sample(0, {"5h": 0}, {"input": 1}),
                    sample(3600, {"5h": 1}, {"input": 1})]

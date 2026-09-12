@@ -6,7 +6,9 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
+import aisubench.runner as runner_module
 from aisubench.meters.base import Usage
 from aisubench.runner import Runner
 from aisubench.task import TaskSpec
@@ -108,6 +110,25 @@ class RunnerTests(unittest.TestCase):
             result = run_verify("python3 -c 'import subprocess,time; subprocess.Popen([\"python3\",\"-c\",\"import time; time.sleep(30)\"]); time.sleep(30)'", directory, 0.2, "task")
             self.assertTrue(result.timed_out)
             self.assertFalse(result.passed)
+
+    def test_workspace_cleaned_when_meter_setup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = self.make_task(root)
+            created = []
+            real_mkdtemp = tempfile.mkdtemp
+
+            def spy_mkdtemp(**kwargs):
+                path = real_mkdtemp(**kwargs)
+                created.append(Path(path))
+                return path
+
+            config = {"agents": {"bad": {"meter": "nope", "log_path": "/dev/null"}}}
+            with mock.patch.object(runner_module.tempfile, "mkdtemp", spy_mkdtemp):
+                with self.assertRaises(ValueError):
+                    Runner(runs_dir=root / "runs", config=config).run(task, "bad")
+            self.assertEqual(len(created), 1)
+            self.assertFalse(created[0].exists())
 
     def test_mock_replays_solution(self):
         with tempfile.TemporaryDirectory() as directory:
