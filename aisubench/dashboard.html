@@ -250,6 +250,9 @@ const fmtTok = x => {
 };
 const tok = x => fmtTok(x) === null ? null : fmtTok(x);
 
+// TPS 展示：数据层已保留两位小数，这里去掉尾随 0（4.50 → 4.5、0.28 → 0.28）
+const fmtTps = x => Number(x).toFixed(2).replace(/\.?0+$/, "");
+
 // 已弹过通知的恢复事件（key@lastSampleTs），同一恢复不重复弹
 const notified = new Set();
 
@@ -277,7 +280,7 @@ function etaText(p) {
   return `${m}m`;
 }
 
-// 池的 token 次级行：已用≈ · 100%当量Q（区间）· 速率
+// 池的 token 次级行：已用≈ · 100%当量Q（区间）· 速率 · TPS
 function poolTokenRow(p) {
   if (!p.has_samples)
     return `<div class="p-tokens"><span class="t unavail">账本中暂无该池样本</span></div>`;
@@ -306,6 +309,9 @@ function poolTokenRow(p) {
   parts.push(p.rate_tph === null || p.rate_tph === undefined
     ? `<span class="t unavail">速率：不可用</span>`
     : `<span class="t"><b>${tok(p.rate_tph)}</b> tok/h</span>`);
+  parts.push(p.tps === null || p.tps === undefined
+    ? `<span class="t unavail">TPS：不可用</span>`
+    : `<span class="t">TPS <b>${fmtTps(p.tps)}</b></span>`);
   return `<div class="p-tokens">${parts.join("")}</div>`;
 }
 
@@ -332,13 +338,17 @@ function poolRow(sub, p, alerts) {
   </div>`;
 }
 
-// 订阅汇总行：跨度内累计 tokens 总量 + input/cached/output 拆分
+// 订阅汇总行：跨度内累计 tokens 总量 + input/cached/output 拆分 + TPS（取各池最大值）
 function subTotalRow(sub) {
   const t = sub.usage_totals;
-  if (!t) return `<div class="sub-total"><span>累计消耗：暂无 usage 数据</span></div>`;
+  const tps = sub.tps === null || sub.tps === undefined
+    ? `<span class="brk">TPS：不可用</span>`
+    : `<span class="brk">TPS <b>${fmtTps(sub.tps)}</b></span>`;
+  if (!t) return `<div class="sub-total"><span>累计消耗：暂无 usage 数据</span>${tps}</div>`;
   return `<div class="sub-total">
     <span>累计消耗</span>
     <span class="total-v">${tok(t.total)}<span class="u"> tok</span></span>
+    ${tps}
     <span class="brk">输入 <b>${tok(t.input)}</b></span>
     <span class="brk">缓存 <b>${tok(t.cached)}</b></span>
     <span class="brk">输出 <b>${tok(t.output)}</b></span>

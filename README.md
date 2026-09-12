@@ -21,7 +21,7 @@ python3 -m aisubench gui --agent mock --probe mock --sample-interval 60
 
 mock agent 完全离线、确定性地产生任务产物和假 usage，可用于验证完整链路。真实 agent 的命令模板写在 `aisubench.toml`，私有覆盖写在被 git 忽略的 `aisubench.local.toml`，不要把 API key 或其他凭证写入仓库。
 
-`watch` 是持续监测的采样侧：一次采样 = meter token 增量 + 额度探针快照，追加到被 git 忽略的账本 `state/ledger.jsonl`（真实使用中长期跑，可配 cron `--once`）；`status` 是展示侧：读账本输出各池「当前已用% | ≈tokens | 100% 当量 Q（±g 区间）| 消耗速率 | 预计耗尽」的中文监控表。账本没有样本时 `status` 会提示先跑 `watch`，这不是错误（退出码仍为 0）。
+`watch` 是持续监测的采样侧：一次采样 = meter token 增量 + 额度探针快照，追加到被 git 忽略的账本 `state/ledger.jsonl`（真实使用中长期跑，可配 cron `--once`）；`status` 是展示侧：读账本输出各池「当前已用% | ≈tokens | 100% 当量 Q（±g 区间）| 消耗速率 | TPS | 预计耗尽」的中文监控表。账本没有样本时 `status` 会提示先跑 `watch`，这不是错误（退出码仍为 0）。
 
 常用命令：
 
@@ -55,6 +55,8 @@ python3 -m aisubench gui --port 7788
 
 `[subscriptions.*].pools` 声明的池会排在表首，账本里还没出现该池样本时单独标注"账本中暂无该池样本"。
 
+表的速率列后有独立的 **TPS** 列：监测口径 `TPS = 该池消耗速率 rate_tph ÷ 3600`（tokens/秒，保留两位小数，如 `4.51 tok/s`；速率不可用时显示「不可用」，无样本池显示「—」）。这是被动消耗的秒均换算，与 bench 报告的生成速度 TPS_gen（output tokens ÷ 首末 token 时间差）**不同口径**，不可混比；订阅级 TPS（GUI 汇总行）取该订阅各池 TPS 的最大值（简化口径，见 `collect_subscriptions` docstring）。
+
 `aisubench gui` 参数说明：
 
 - `--port N`：监听端口，默认 7788；服务只绑定 127.0.0.1，不暴露到局域网。
@@ -63,7 +65,7 @@ python3 -m aisubench gui --port 7788
 - `--sample-interval SEC`：GUI 进程内后台每 SEC 秒采样一次（需同时给 `--agent/--probe`），单进程 = 采样 + 展示；不传则只读账本。
 - `--debug`：开启调试模式，`/debug` 页面可访问（默认关闭时返回 404）：状态栏预览（用 `shells/shared/viewmodel.py` 渲染，所见即 Mac 状态栏将显示的内容）、原始 `collect_status` JSON、账本末尾样本与 meter offsets 原文。
 
-页面数字与 `status` 完全同源（`collect_status` / `collect_subscriptions`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
+页面数字与 `status` 完全同源（`collect_status` / `collect_subscriptions`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。每池 token 次级行在速率后追加 TPS（如 `TPS 4.5`）、订阅汇总行显示该订阅各池最大 TPS，均为监测口径的消耗速率换算（`rate_tph ÷ 3600`），与 bench 的生成速度 TPS_gen 不同口径；速率不可用时显示「不可用」。
 
 主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。卡片头部另有「任务标定」按钮：确认后用该订阅绑定的 agent/probe 后台跑 calibration 档任务（真实消耗 token，上限 `[calibration].max_tasks`），结果写 `reports/calibration-<订阅>.json`，标定出的 Q 以"标定值"徽标与监测估算并列展示。
 

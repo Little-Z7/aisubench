@@ -171,9 +171,32 @@ class GuiServerTests(unittest.TestCase):
         self.assertEqual(round(pool["q_low"]), 42857)
         self.assertEqual(pool["q_high"], 60000.0)
         self.assertEqual(pool["rate_tph"], 1000.0)
+        self.assertEqual(pool["tps"], 0.28)  # 1,000 tok/h ÷ 3600，保留两位小数
         self.assertEqual(pool["eta_hours"], 47.0)
         self.assertEqual(pool["n_pairs"], 3)
         self.assertEqual(pool["resets"], 0)
+
+    def test_api_status_tps_fields(self):
+        # /api/status 的池与订阅 dict 都带 tps：池 = rate_tph ÷ 3600（两位小数），
+        # 订阅级 = 各池 tps 非 None 最大值；无样本的 demo 订阅为 None。
+        samples = [mk(0, {"5h": 0}),
+                   mk(3600, {"5h": 1}, input=500),
+                   mk(7200, {"5h": 3}, input=400, output=600),
+                   mk(10800, {"5h": 6}, input=1000, cached=500)]
+        for item in samples:
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+            html = fix.get("/").read().decode("utf-8")
+        sub = subs_by_name(data)["default"]
+        self.assertEqual(sub["pools"][0]["tps"], 0.28)
+        self.assertEqual(sub["tps"], 0.28)
+        demo = subs_by_name(data)["demo"]
+        self.assertIn("tps", demo)
+        self.assertIsNone(demo["tps"])
+        self.assertIsNone(demo["pools"][0]["tps"])
+        # 面板静态资源包含 TPS 渲染（池次级行 + 订阅汇总行）
+        self.assertIn("TPS", html)
 
     def test_api_status_usage_totals_fields(self):
         # 订阅/全局 token 汇总字段：跨度累计 + 近窗口累计 + 拆分

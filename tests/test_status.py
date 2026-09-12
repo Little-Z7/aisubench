@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 from unittest import mock
 import unittest
@@ -80,6 +81,36 @@ class StatusTests(unittest.TestCase):
     def rows(self, text):
         return {line.split()[0]: line for line in text.splitlines()
                 if line and line.split()[0] in ("5h", "week", "month")}
+
+    def cells(self, line):
+        """按 ≥2 空格切表格行成列（单元格内部只有单空格）。"""
+        return [cell.strip() for cell in re.split(r"\s{2,}", line.strip())]
+
+    def test_status_table_tps_column(self):
+        path = self.write_ledger("ledger.jsonl", single_pool_samples())
+        text = self.status_text(path)
+        header = next(line for line in text.splitlines()
+                      if line.strip().startswith("池"))
+        self.assertIn("TPS", self.cells(header))
+        # 1,000 tok/h ÷ 3600 ≈ 0.28：TPS 列紧跟速率列之后
+        self.assertEqual(self.cells(self.rows(text)["5h"])[5], "0.28 tok/s")
+
+    def test_status_table_tps_unavailable(self):
+        # 速率跨度 < 60s → 数据不足：速率/TPS/ETA 三列都是「不可用」
+        path = self.write_ledger("ledger.jsonl",
+                                 [mk(0, {"5h": 5}), mk(30, {"5h": 5}, input=1000)])
+        cells = self.cells(self.rows(self.status_text(path))["5h"])
+        self.assertEqual(len(cells), 8)
+        self.assertEqual(cells[4], "不可用")  # 速率
+        self.assertEqual(cells[5], "不可用")  # TPS
+
+    def test_status_table_tps_placeholder_for_configured_pool(self):
+        # 配置声明但无样本的 month 池：TPS 列与速率列一样是「—」
+        path = self.write_ledger("ledger.jsonl", single_pool_samples())
+        text = self.status_text(path, config=CONFIG_MULTI)
+        cells = self.cells(self.rows(text)["month"])
+        self.assertEqual(cells[4], "—")
+        self.assertEqual(cells[5], "—")
 
     def test_missing_ledger_prints_watch_hint(self):
         text = self.status_text(self.root / "nowhere.jsonl")
@@ -245,6 +276,36 @@ class SubscriptionGroupTests(unittest.TestCase):
                    mk(3600, {"5h": 82}, input=100, subscription="mock1")]
         sub = self.subs_by_name(self.collect(samples))["mock1"]
         self.assertEqual(sub["analysis"], "")
+
+    def test_tps_fields(self):
+        # 手算：5h 池窗口内 Σtokens=18000、跨度 2h → 9,000 tok/h → tps=2.5；
+        # week 池样本止于 3600（Σtokens=16200、跨度 1h）→ 16,200 tok/h →
+        # 16200 ÷ 3600 = 4.5；订阅级取各池 tps 最大值 → 4.5。
+        samples = [mk(0, {"5h": 0, "week": 0}, subscription="mock1"),
+                   mk(3600, {"5h": 2, "week": 2}, input=16200,
+                            subscription="mock1"),
+                   mk(7200, {"5h": 3}, input=1800, subscription="mock1")]
+        sub = self.subs_by_name(self.collect(samples))["mock1"]
+        pools = {p["name"]: p for p in sub["pools"]}
+        self.assertEqual(pools["5h"]["rate_tph"], 9000.0)
+        self.assertEqual(pools["5h"]["tps"], 2.5)
+        self.assertEqual(pools["week"]["rate_tph"], 16200.0)
+        self.assertEqual(pools["week"]["tps"], 4.5)
+        self.assertEqual(sub["tps"], 4.5)
+
+    def test_tps_none_when_no_rate(self):
+        # 5h 跨度 < 60s → rate/tps None；week 无样本 → tps None；
+        # 全部池无速率 → 订阅级 tps None（字段存在，向后兼容只加字段）
+        samples = [mk(1000, {"5h": 10}, subscription="mock1"),
+                   mk(1030, {"5h": 11}, input=100, subscription="mock1")]
+        sub = self.subs_by_name(self.collect(samples))["mock1"]
+        self.assertIn("tps", sub)
+        pools = {p["name"]: p for p in sub["pools"]}
+        self.assertIsNone(pools["5h"]["rate_tph"])
+        self.assertIsNone(pools["5h"]["tps"])
+        self.assertFalse(pools["week"]["has_samples"])
+        self.assertIsNone(pools["week"]["tps"])
+        self.assertIsNone(sub["tps"])
 
     def test_stale_flag(self):
         samples = [mk(1000, {"5h": 10}, subscription="mock1"),

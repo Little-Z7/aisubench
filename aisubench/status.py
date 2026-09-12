@@ -58,8 +58,10 @@ def collect_status(config: dict, ledger: str | Path | None = None,
     返回 {ledger_path, ledger_exists, window_hours, clean_only, n_samples,
     span_hours, external_tokens, last_sample_ts, pools}；``pools`` 每项为
     {name, has_samples, current_pct, prev_pct, used_tokens, tokens_per_pct,
-    available, quota_tokens, q_low, q_high, n_pairs, resets, rate_tph,
-    eta_hours}，数值缺失一律为 None（不可用），不输出伪 0 值。
+    available, quota_tokens, q_low, q_high, n_pairs, resets, rate_tph, tps,
+    eta_hours}，数值缺失一律为 None（不可用），不输出伪 0 值。``tps`` 为
+    监测口径的 token/秒：``rate_tph ÷ 3600`` 保留两位小数，与 bench 报告的
+    生成速度 tps_gen 不同口径。
     """
     ledger_path, window, samples = _resolve_inputs(config, ledger, window_hours)
     pools, meta = _collect_pools(config, samples, None, window, clean_only)
@@ -91,11 +93,14 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
     返回与 ``collect_status`` 相同的全局元数据键，但 ``pools`` 换成
     ``subscriptions``：每项 {name, label, account, agent, host,
     last_sample_ts, last_sample_rel, stale, n_samples, external_tokens,
-    analysis, usage_totals, pools}；``pools`` 与 ``collect_status`` 的池
+    analysis, usage_totals, tps, pools}；``pools`` 与 ``collect_status`` 的池
     dict 同结构。``usage_totals`` 为该订阅监测跨度内样本 usage 的累计
     {input, cached, output, total, requests}（无样本时为 None）。
-    顶层另有 ``usage_totals``（全部样本同口径累计）与 ``window_usage``
-    （仅最近 ``window_hours`` 窗口内样本的累计，供面板头部展示）。
+    订阅级 ``tps`` 是简化口径：没有跨池统一的最近窗口速率可直接聚合，
+    取该订阅各池 ``tps`` 中非 None 的最大值（即当前消耗最快的池），全部
+    池都无速率时为 None。顶层另有 ``usage_totals``（全部样本同口径累计）
+    与 ``window_usage``（仅最近 ``window_hours`` 窗口内样本的累计，供面板
+    头部展示）。
     ``stale`` 判定同 GUI 口径：最新样本距今超过参考间隔 3 倍（参考间隔取
     ``stale_interval_sec`` 或 ``[watch].interval_sec``，默认 300s）。
     """
@@ -123,6 +128,7 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
         last = max(stamps) if stamps else None
         analysis = " · ".join(note for note in
                               (pace_note(pool) for pool in pools) if note)
+        pool_tps = [pool["tps"] for pool in pools if pool.get("tps") is not None]
         subscriptions.append({
             "name": name,
             "label": str(sub_cfg.get("label") or name),
@@ -138,6 +144,7 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
             "external_tokens": int(meta.get("external_tokens", 0) or 0),
             "analysis": analysis,
             "usage_totals": _usage_totals(sub_samples),
+            "tps": max(pool_tps) if pool_tps else None,
             "pools": pools,
         })
 
@@ -221,9 +228,10 @@ def _collect_pools(config: dict, samples: list[dict], subscription: str | None,
 def _collect_pool(name: str, est: dict | None, current_pct: float | None,
                   rate_samples: list[dict], window_hours: float,
                   prev_pct: float | None = None) -> dict:
-    """单池的结构化结果：当前% / 上读数% / 已用 tokens / Q 区间 / 速率 / ETA / 对数与重置。"""
+    """单池的结构化结果：当前% / 上读数% / 已用 tokens / Q 区间 / 速率 / TPS / ETA / 对数与重置。"""
     ratio = est.get("tokens_per_pct") if est else None
     rate = burn_rate(rate_samples, name, window_hours)
+    tps = round(rate / 3600.0, 2) if rate is not None else None
     eta = eta_hours(current_pct, ratio, rate) if rate is not None else None
     return {
         "name": name,
@@ -240,6 +248,7 @@ def _collect_pool(name: str, est: dict | None, current_pct: float | None,
         "n_pairs": est.get("n_pairs") if est else None,
         "resets": est.get("resets") if est else None,
         "rate_tph": rate,
+        "tps": tps,
         "eta_hours": eta,
     }
 
@@ -348,7 +357,7 @@ def render_status(status: dict) -> str:
         return "\n".join(lines)
 
     header = ("池", "当前已用%", "已用≈tokens", f"100%当量Q(低–高)",
-              f"速率(近{window_hours:g}h)", "预计耗尽", "备注")
+              f"速率(近{window_hours:g}h)", "TPS", "预计耗尽", "备注")
     for sub in subscriptions:
         lines.append("")
         label = str(sub.get("label") or sub["name"])
@@ -379,7 +388,7 @@ def _pool_row(pool: dict) -> tuple[str, ...]:
         low, high = pool["q_low"], pool["q_high"]
         quota = (f"{pool['quota_tokens']:,.0f} ({low:,.0f}–{high:,.0f})"
                  if high is not None else f"{pool['quota_tokens']:,.0f} (≥{low:,.0f})")
-    rate, eta = pool["rate_tph"], pool["eta_hours"]
+    rate, tps, eta = pool["rate_tph"], pool["tps"], pool["eta_hours"]
     if not pool["has_samples"]:
         note = "账本中暂无该池样本"
     else:
@@ -392,6 +401,8 @@ def _pool_row(pool: dict) -> tuple[str, ...]:
             used, quota,
             "—" if not pool["has_samples"]
             else (_UNAVAILABLE if rate is None else f"{rate:,.0f} tok/h"),
+            "—" if not pool["has_samples"]
+            else (_UNAVAILABLE if tps is None else f"{tps:.2f} tok/s"),
             "—" if not pool["has_samples"]
             else (_UNAVAILABLE if eta is None else f"{eta:.1f} h"),
             note)
