@@ -2,6 +2,7 @@
 
     aisubench gui [--port 7788] [--window-hours 24] [--clean-only]
                   [--sample-interval N] [--agent X --probe Y] [--ledger PATH]
+                  [--debug]
 
 路由：
 - ``GET /``            单页监控面板（``aisubench/dashboard.html``，vanilla JS
@@ -10,7 +11,12 @@
                        ``status`` 同口径同数字；
 - ``POST /api/sample`` 立即采样一次（复用 watch 的 ``WatchSession.sample_once``，
                        启动时需传 ``--agent/--probe``，否则返回 403 且按钮置灰；
-                       与后台采样线程共用一把锁防并发重入，重入返回 409）。
+                       与后台采样线程共用一把锁防并发重入，重入返回 409）；
+- ``GET /debug``       仅 ``--debug`` 时开放（否则 404）：服务端渲染的调试页，
+                       含状态栏预览（复用 ``shells/shared/viewmodel`` 的
+                       title_text/pool_rows/header_rows，浏览器所见即菜单栏
+                       菜单内容）、``collect_status`` 完整 JSON、账本末尾
+                       10 条样本原文与 meter_offsets.json 内容。
 
 ``--sample-interval N`` 时 GUI 进程内起守护线程每 N 秒采样一次，单进程 =
 采样 + 展示；不传则只读账本。服务只绑定 127.0.0.1，不暴露到局域网。
@@ -18,11 +24,13 @@
 
 from __future__ import annotations
 
+import html
 import json
 import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -42,12 +50,14 @@ class GuiState:
     def __init__(self, *, config: dict, ledger_path: str | Path,
                  window_hours: float, clean_only: bool = False,
                  session: WatchSession | None = None,
-                 sample_interval_sec: float | None = None):
+                 sample_interval_sec: float | None = None,
+                 debug: bool = False):
         self.config = config
         self.ledger_path = Path(ledger_path)
         self.window_hours = float(window_hours)
         self.clean_only = bool(clean_only)
         self.session = session
+        self.debug = bool(debug)
         # 数据新鲜度判定的参考间隔：--sample-interval 或 [watch].interval_sec。
         self.sample_interval_sec = sample_interval_sec
         self.sample_lock = threading.Lock()
@@ -60,6 +70,7 @@ class GuiState:
         status["server_time"] = time.time()
         status["sampling_enabled"] = self.session is not None
         status["sample_interval_sec"] = self.sample_interval_sec
+        status["debug_enabled"] = self.debug
         last = status.get("last_sample_ts")
         status["stale"] = bool(
             last is not None and self.sample_interval_sec
@@ -102,6 +113,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", DASHBOARD_HTML.read_bytes())
+        elif path == "/debug" and self.server.state.debug:
+            self._send(200, "text/html; charset=utf-8",
+                       _debug_page(self.server.state))
         elif path == "/api/status":
             self._send_json(200, self.server.state.status_payload())
         else:
@@ -126,6 +140,145 @@ class _DashboardHandler(BaseHTTPRequestHandler):
     def _send_json(self, code: int, payload: dict) -> None:
         self._send(code, "application/json; charset=utf-8",
                    json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _esc(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _menubar_preview(status: dict) -> str:
+    """状态栏预览：复用 shells/shared/viewmodel，渲染结果与 macOS 菜单栏一致。"""
+    from shells.shared import viewmodel
+    parts = [f'<div class="mb-line">菜单栏标题：<code>{_esc(viewmodel.title_text(status))}</code></div>',
+             '<div class="mb-group">头部信息行</div>']
+    parts.extend(f'<div class="mb-line">{_esc(line)}</div>'
+                 for line in viewmodel.header_rows(status))
+    parts.append('<div class="mb-group">池行</div>')
+    rows = viewmodel.pool_rows(status)
+    if not rows:
+        parts.append('<div class="mb-line dim">（空账本，菜单栏无池行）</div>')
+    for row in rows:
+        level = str(row.get("level") or "normal")
+        prefix = {"warn": "! ", "critical": "!! "}.get(level, "")
+        detail = "<br>".join(_esc(line)
+                             for line in str(row.get("detail") or "").splitlines())
+        parts.append(
+            f'<div class="mb-pool {level}">'
+            f'<div class="mb-line">{_esc(prefix + str(row.get("title") or ""))}'
+            f'<span class="lvl">{_esc(level)}</span></div>'
+            f'<div class="mb-detail">{detail}</div></div>')
+    return "\n".join(parts)
+
+
+def _debug_page(state: GuiState) -> bytes:
+    """服务端渲染 /debug：刷新时间 + 状态栏预览 + 原始数据（无自动轮询）。"""
+    status = state.status_payload()
+    stamp = datetime.fromtimestamp(status["server_time"]).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    try:
+        preview = _menubar_preview(status)
+    except Exception as exc:
+        preview = f'<div class="mb-line warn">状态栏预览不可用：{_esc(exc)}</div>'
+
+    status_json = _esc(json.dumps(status, ensure_ascii=False, indent=2))
+    try:
+        lines = state.ledger_path.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+        tail = lines[-10:]
+        ledger_text = _esc("\n".join(tail)) if tail else "（账本为空）"
+    except OSError:
+        ledger_text = f"（账本文件不存在：{_esc(state.ledger_path)}）"
+
+    if state.session is not None:
+        offsets_path = state.session.offsets_path
+    else:
+        watch_cfg = state.config.get("watch") or {}
+        offsets_path = _resolve_path(watch_cfg.get("offsets_file"), OFFSETS_FILE)
+    try:
+        offsets_text = _esc(offsets_path.read_text(
+            encoding="utf-8", errors="replace").strip() or "（空文件）")
+    except OSError:
+        offsets_text = f"（meter_offsets.json 不存在：{_esc(offsets_path)}）"
+
+    page = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AISUBench 调试模式</title>
+<style>
+:root {{
+  --bg: #0d1117; --panel: #161b22; --border: #30363d;
+  --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}}
+.wrap {{ max-width: 1080px; margin: 0 auto; padding: 16px; }}
+header {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
+h1 {{ font-size: 18px; margin: 0; font-weight: 600; }}
+.sub {{ color: var(--dim); font-size: 12px; margin-top: 2px; }}
+a {{ color: var(--accent); text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+.card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-top: 12px; }}
+.card h2 {{ font-size: 14px; margin: 0 0 8px; font-weight: 600; }}
+.menubar {{ font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+.mb-line {{ padding: 2px 8px; }}
+.mb-line code {{ color: var(--accent); background: #21262d; padding: 1px 6px; border-radius: 4px; }}
+.mb-group {{ color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 8px 8px 2px; border-top: 1px solid var(--border); margin-top: 6px; }}
+.mb-group:first-of-type {{ border-top: 0; }}
+.mb-pool {{ margin: 4px 8px; padding-left: 8px; border-left: 3px solid var(--border); }}
+.mb-pool.warn {{ border-left-color: var(--warn); }}
+.mb-pool.critical {{ border-left-color: var(--bad); }}
+.mb-detail {{ color: var(--dim); padding: 0 8px 4px; }}
+.lvl {{ font-size: 11px; color: var(--dim); margin-left: 8px; }}
+.mb-pool.warn .lvl {{ color: var(--warn); }}
+.mb-pool.critical .lvl {{ color: var(--bad); }}
+.dim {{ color: var(--dim); }}
+.warn {{ color: var(--warn); }}
+pre {{
+  margin: 8px 0 0; padding: 10px 12px; overflow-x: auto; font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+}}
+pre .dim {{ color: var(--dim); }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AISUBench 调试模式</h1>
+      <div class="sub">数据刷新时间：{stamp}（手动刷新页面更新，不自动轮询）</div>
+    </div>
+    <div><a href="/">← 返回监控面板</a></div>
+  </header>
+  <section class="card">
+    <h2>状态栏预览（与 macOS 菜单栏菜单一致）</h2>
+    <div class="menubar">
+{preview}
+    </div>
+  </section>
+  <section class="card">
+    <h2>原始数据 · collect_status JSON</h2>
+    <pre>{status_json}</pre>
+  </section>
+  <section class="card">
+    <h2>原始数据 · 账本末尾 10 条样本（{_esc(state.ledger_path)}）</h2>
+    <pre>{ledger_text}</pre>
+  </section>
+  <section class="card">
+    <h2>原始数据 · meter_offsets.json</h2>
+    <pre>{offsets_text}</pre>
+  </section>
+</div>
+</body>
+</html>
+"""
+    return page.encode("utf-8")
 
 
 def _make_session(agent: str, probe: str, config: dict,
@@ -158,7 +311,8 @@ def _sampler_loop(state: GuiState, interval: float, stop: threading.Event) -> No
 def run_gui(*, port: int = DEFAULT_PORT, window_hours: float | None = None,
             clean_only: bool = False, sample_interval: float | None = None,
             agent: str | None = None, probe: str | None = None,
-            ledger: str | Path | None = None, config: dict | None = None) -> int:
+            ledger: str | Path | None = None, config: dict | None = None,
+            debug: bool = False) -> int:
     """gui 子命令主体。``config`` 可注入，便于测试；返回退出码。"""
     config = load_config() if config is None else config
     watch_cfg = config.get("watch") or {}
@@ -184,10 +338,12 @@ def run_gui(*, port: int = DEFAULT_PORT, window_hours: float | None = None,
 
     state = GuiState(config=config, ledger_path=ledger_path, window_hours=window,
                      clean_only=clean_only, session=session,
-                     sample_interval_sec=freshness_interval)
+                     sample_interval_sec=freshness_interval, debug=debug)
     server = build_server(state, port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"AISUBench 监控面板已启动：{url}（仅本机访问，Ctrl-C 退出）")
+    if debug:
+        print(f"调试模式已开启：{url}debug")
     if session is not None:
         hint = f"后台采样已开启，间隔 {interval:g}s" if interval is not None \
             else "手动采样已开启（页面「立即采样」按钮）"

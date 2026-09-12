@@ -204,6 +204,55 @@ class GuiServerTests(unittest.TestCase):
             self.assertEqual(result["first"], 200)
         self.assertEqual(len(load_samples(self.ledger)), 1)
 
+    def test_debug_page_404_when_disabled(self):
+        for item in (mk(0, {"5h": 0}), mk(3600, {"5h": 1}, input=500)):
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                fix.get("/debug")
+            self.assertEqual(ctx.exception.code, 404)
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+            self.assertFalse(data["debug_enabled"])
+
+    def test_debug_page_renders_preview_and_raw_data(self):
+        # 97% 已用 + 速率 750 tok/h → ETA < 2h，池行应为 critical 级
+        samples = [mk(0, {"5h": 90}),
+                   mk(3600, {"5h": 95}, input=500),
+                   mk(7200, {"5h": 97}, input=400, output=600)]
+        for item in samples:
+            append_sample(self.ledger, item)
+        self.offsets.write_text('{"x": 42}', encoding="utf-8")
+        with ServerFixture(self.make_state(
+                session=self.make_session(), debug=True)) as fix:
+            response = fix.get("/debug")
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/html", response.headers["Content-Type"])
+            body = response.read().decode("utf-8")
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+            self.assertTrue(data["debug_enabled"])
+        # 状态栏预览：菜单栏标题、池行（含级别标识）、头部信息行
+        self.assertIn("状态栏预览", body)
+        self.assertIn("菜单栏标题", body)
+        self.assertIn("5h 97%", body)
+        self.assertIn("5h · 已用 97%", body)
+        self.assertIn("critical", body)
+        self.assertIn("头部信息行", body)
+        self.assertIn("样本 3 · 跨度 2.0 h", body)
+        # 原始数据：完整 JSON、账本原文、offsets 内容
+        self.assertIn('&quot;n_samples&quot;: 3', body)
+        self.assertIn("&quot;pools&quot;: {&quot;5h&quot;: 97}", body)
+        self.assertIn("42", body)
+        self.assertIn("数据刷新时间", body)
+        self.assertIn("返回监控面板", body)
+
+    def test_debug_page_missing_files_hints(self):
+        with ServerFixture(self.make_state(debug=True)) as fix:
+            body = fix.get("/debug").read().decode("utf-8")
+        self.assertIn("账本文件不存在", body)
+        self.assertIn("meter_offsets.json 不存在", body)
+        # 空账本时菜单栏无池行，头部行是 watch 引导
+        self.assertIn("账本还没有样本", body)
+
     def test_unknown_path_404(self):
         with ServerFixture(self.make_state()) as fix:
             with self.assertRaises(urllib.error.HTTPError) as ctx:

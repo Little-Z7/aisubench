@@ -60,6 +60,7 @@ python3 -m aisubench gui --port 7788
 - `--window-hours N` / `--clean-only` / `--ledger PATH`：与 `status` 同口径同默认。
 - `--agent X --probe Y`：启用页面「立即采样」按钮（复用 watch 的 meter + 探针会话）；两者需同时提供，不传则按钮置灰。
 - `--sample-interval SEC`：GUI 进程内后台每 SEC 秒采样一次（需同时给 `--agent/--probe`），单进程 = 采样 + 展示；不传则只读账本。
+- `--debug`：开启调试模式，`/debug` 页面可访问（默认关闭时返回 404）：状态栏预览（用 `shells/shared/viewmodel.py` 渲染，所见即 Mac 状态栏将显示的内容）、原始 `collect_status` JSON、账本末尾样本与 meter offsets 原文。
 
 页面数字与 `status` 完全同源（共用 `collect_status`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
 

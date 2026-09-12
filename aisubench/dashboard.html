@@ -25,6 +25,9 @@ button {
 }
 button:hover:not(:disabled) { background: #30363d; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+#debug-link { font-size: 13px; align-self: center; }
 #meta {
   margin: 12px 0; padding: 10px 14px; font-size: 13px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -63,6 +66,7 @@ dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
       <h1>AISUBench 持续监测</h1>
       <div class="sub" id="ledger"></div>
     </div>
+    <a id="debug-link" href="/debug" hidden>调试模式</a>
     <button id="sample-btn" disabled>立即采样</button>
   </header>
   <section id="meta">加载中…</section>
@@ -117,6 +121,7 @@ function render(data) {
   const btn = $("#sample-btn");
   btn.disabled = !data.sampling_enabled;
   btn.title = data.sampling_enabled ? "" : "启动时需传 --agent/--probe 才可采样";
+  $("#debug-link").hidden = !data.debug_enabled;
 
   const meta = $("#meta");
   meta.classList.toggle("stale", !!data.stale);

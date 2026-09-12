@@ -57,6 +57,8 @@ status.collect_status（结构化 dict）──► status（中文监控表）/ 
 
 采样能力复用 watch 的 `WatchSession.sample_once`：`POST /api/sample` 触发「立即采样」（需启动时传 `--agent/--probe`，否则按钮置灰且接口返回 403；与后台线程共用一把锁，并发重入返回 409）；`--sample-interval N` 时 GUI 进程内起守护线程每 N 秒采样一次，瞬时异常只警告并继续——单进程即完成采样 + 展示，不传采样参数时面板只读账本。
 
+`--debug` 开启调试模式（默认关闭，`/debug` 返回 404）：`/debug` 页面含状态栏预览（用 `shells/shared/viewmodel.py` 渲染，所见即 macOS 状态栏将显示的内容，供无 Mac 环境验证壳 UI 逻辑）、原始 `collect_status` JSON、账本末尾样本与 meter offsets 原文。
+
 ### 原生壳（shells/macos）
 
 `shells/macos` 是 macOS 状态栏监控应用（rumps，`python3 -m shells.macos`）：菜单栏标题显示最紧急池的 `池名 已用%`，下拉菜单 = 头部信息行 + 每池「已用≈tokens · Q(低–高) / 速率 · ETA」+「立即采样 / 重新读取 / 退出」。**硬性约束：无浏览器跳转、无 WebView、无本地 HTTP 服务**——与 `gui` 的 HTTP 面板路线刻意分开：取数进程内调 `collect_status`（数字与 CLI `status` 完全同源），采样进程内 daemon 线程复用 `WatchSession.sample_once`（与后台循环共用一把锁防重入，瞬时异常打印警告后继续），不开任何端口。`--no-sample` 时只读账本、「立即采样」置灰；最后采样距今超过 30 分钟时头部追加「数据陈旧」。文案沿用 CLI 口径：不可用 / 数据不足(Δ 未超粒度) / 账本中暂无该池样本。

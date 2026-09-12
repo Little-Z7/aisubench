@@ -64,6 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="agent 名，取 [agents.*] 的 meter/log_path（mock 用内置合成日志）")
     gui.add_argument("--probe", choices=["mock", "arkcli", "manual"], help="额度探针")
     gui.add_argument("--ledger", help="账本 JSONL 路径（默认取 [watch].ledger）")
+    gui.add_argument("--debug", action="store_true",
+                     help="开启调试模式：主面板显示入口，GET /debug 展示状态栏预览与原始数据")
     return parser
 
 
@@ -130,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_gui(port=args.port, window_hours=args.window_hours,
                            clean_only=args.clean_only,
                            sample_interval=args.sample_interval,
-                           agent=args.agent, probe=args.probe, ledger=args.ledger)
+                           agent=args.agent, probe=args.probe, ledger=args.ledger,
+                           debug=args.debug)
         return 2
     except FileNotFoundError as exc:
         print(f"错误：{exc}", file=sys.stderr)
