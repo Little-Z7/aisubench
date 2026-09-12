@@ -210,9 +210,102 @@ a:hover { text-decoration: underline; }
   backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
   box-shadow: var(--glass-shadow);
 }
+
+/* CodexBar 风格顶部 Tab 栏：概览 + 每订阅一个 Tab（纯前端切换，无路由） */
+#tabs {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  margin: 0 0 16px; padding: 5px; border-radius: 14px;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+.tab {
+  flex: none; padding: 6px 16px; border-radius: 10px; font-size: 13px;
+  background: transparent; border: 1px solid transparent; color: var(--dim);
+}
+.tab:hover:not(.on) { color: var(--fg); background: rgba(255, 255, 255, .06); transform: none; }
+.tab.on {
+  color: var(--fg); background: rgba(255, 255, 255, .11);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+/* 单订阅详细视图（CodexBar 菜单栏 popover 布局） */
+.detail { padding: 18px 20px; }
+.detail.stale { opacity: .6; }
+.d-head { display: flex; align-items: center; gap: 13px; }
+.d-title { font-size: 17px; font-weight: 650; }
+.d-title .acct { color: var(--dim); font-weight: 400; font-size: 13px; }
+.d-sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
+
+/* 池块：池名+推断重置（上）/ 大号剩余% / 10 段分段条 / 速率副行 / token 明细行 */
+.d-pool {
+  margin-top: 16px; padding: 14px 16px; border-radius: 14px;
+  background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .08);
+}
+.d-pool-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.d-pool-name {
+  font-size: 12.5px; font-weight: 600; color: var(--dim);
+  letter-spacing: .05em; text-transform: uppercase;
+}
+.d-reset { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.d-pct {
+  font-size: 30px; font-weight: 700; margin-top: 3px;
+  font-variant-numeric: tabular-nums; letter-spacing: .01em;
+}
+.d-pct .u { font-size: 13px; font-weight: 500; color: var(--dim); margin-left: 7px; }
+.d-pct.ok { color: var(--ok); }
+.d-pct.mid { color: var(--warn); }
+.d-pct.high { color: var(--bad); }
+.d-pct.none { color: var(--dim2); font-size: 22px; font-weight: 600; }
+.seg-bar { display: flex; gap: 4px; margin-top: 10px; }
+.seg {
+  flex: 1; height: 9px; border-radius: 5px;
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3);
+  transition: background .3s;
+}
+.seg.on { background: linear-gradient(180deg, #6ee7b7, #34d399); box-shadow: 0 0 6px rgba(52, 211, 153, .5); }
+.seg.on.mid { background: linear-gradient(180deg, #fde68a, #fbbf24); box-shadow: 0 0 6px rgba(251, 191, 36, .5); }
+.seg.on.high { background: linear-gradient(180deg, #fca5a5, #f87171); box-shadow: 0 0 6px rgba(248, 113, 113, .5); }
+.seg.on.none { background: rgba(255, 255, 255, .14); box-shadow: none; }
+.d-pool-sub { margin-top: 9px; font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.d-pool-sub b { color: var(--fg); font-weight: 600; }
+.d-pool-sub .rng { color: var(--dim2); font-size: 11.5px; }
+
+/* 统计双列块：今日 / 近 30 天 各 token 用量 + 折算费用 */
+.d-stats { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.d-stat {
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .08);
+}
+.d-stat .v { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.d-stat .v .u { font-size: 12px; font-weight: 500; color: var(--dim); margin-left: 2px; }
+.d-stat .v.na { color: var(--dim2); font-size: 15px; font-weight: 500; }
+.d-stat .k { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+.d-hint { margin-top: 8px; font-size: 12px; color: var(--warn); }
+.d-hint.dim { color: var(--dim2); }
+
+/* 30 天每日 tokens 柱状图（SVG，无外部库；最高柱标数值） */
+.d-chart { margin-top: 16px; }
+.d-chart-t { font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
+.d-chart svg { width: 100%; height: auto; display: block; }
+.d-chart .bar { fill: rgba(110, 168, 255, .42); }
+.d-chart .bar.max { fill: var(--accent); }
+.d-chart .axis { fill: var(--dim2); font-size: 9.5px; }
+.d-chart .max-label { fill: var(--fg); font-size: 10.5px; font-weight: 600; }
+
+.d-foot {
+  margin-top: 15px; padding-top: 11px;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  font-size: 12.5px; color: var(--dim);
+}
+.d-foot b { color: var(--fg); font-weight: 600; }
+
 @media (max-width: 640px) {
   .p-tokens { margin-left: 0; }
   .stats { gap: 18px; }
+  .d-stats { grid-template-columns: 1fr; }
+  .d-pct { font-size: 25px; }
 }
 </style>
 </head>
@@ -228,6 +321,7 @@ a:hover { text-decoration: underline; }
     <button id="sample-btn" disabled>立即采样</button>
   </header>
   <section id="meta" class="glass">加载中…</section>
+  <nav id="tabs"></nav>
   <main id="subs"></main>
 </div>
 <div id="toast"></div>
@@ -257,6 +351,10 @@ const fmtTps = x => Number(x).toFixed(2).replace(/\.?0+$/, "");
 // 已弹过通知的恢复事件（key@lastSampleTs），同一恢复不重复弹
 const notified = new Set();
 
+// 当前选中 Tab："overview" 或订阅名（纯前端切换，无路由）；lastData 供切 Tab 重绘
+let activeTab = "overview";
+let lastData = null;
+
 const BELL_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
   stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
   <path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3L2 11.5h12L12.5 9V6A4.5 4.5 0 0 0 8 1.5z"/>
@@ -279,6 +377,16 @@ function etaText(p) {
   if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
+}
+
+// 秒级时长缩写：详图「约 Xd 后重置」等用（300s → 5m，7h → 7h，40h → 1d 16h）
+function durText(sec) {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
 }
 
 // 池的 token 次级行：已用≈ · 100%当量Q（区间）· 速率 · TPS
@@ -419,7 +527,196 @@ function subCard(sub, alerts) {
   </div>`;
 }
 
+/* ---------- 单订阅详细视图（CodexBar popover 布局） ---------- */
+
+// 池块右上「约 Xd 后重置（推断）」：该池观测到 ≥2 次重置时按平均周期外推，不足则不显示
+function resetBadge(sub, poolName, now) {
+  const evs = (sub.reset_events || [])
+    .filter(e => e.pool === poolName && typeof e.ts === "number")
+    .map(e => e.ts).sort((a, b) => a - b);
+  if (evs.length < 2) return "";
+  let sum = 0;
+  for (let i = 1; i < evs.length; i++) sum += evs[i] - evs[i - 1];
+  const avg = sum / (evs.length - 1);
+  const left = evs[evs.length - 1] + avg - now;
+  const text = left <= 0 ? "已过推断重置时间" : `约 ${durText(left)} 后重置`;
+  return `<span class="d-reset" title="据账本 ${evs.length} 次观测重置推断`
+    + `（平均周期约 ${durText(avg)}），非官方口径">${text}（推断）</span>`;
+}
+
+// 分段式进度条：10 段圆角小段按剩余%填充；颜色沿用已用%阈值（<70 绿 / <90 黄 / ≥90 红）
+function segBar(p) {
+  const used = p.current_pct, rem = p.remaining_pct;
+  const cls = used === null || used === undefined ? "none"
+    : used >= 90 ? "high" : used >= 70 ? "mid" : "";
+  const filled = rem === null || rem === undefined ? 0
+    : Math.round(Math.max(0, Math.min(100, rem)) / 10);
+  let segs = "";
+  for (let i = 0; i < 10; i++)
+    segs += `<span class="seg${i < filled ? " on " + cls : ""}"></span>`;
+  return `<div class="seg-bar">${segs}</div>`;
+}
+
+// 池块 token 明细行：已用≈ · Q（区间或标定值徽标）· 预计耗尽
+function poolQuotaLine(p) {
+  if (!p.has_samples) return "";
+  const parts = [];
+  const used = tok(p.used_tokens);
+  if (used !== null) parts.push(`已用 ≈ <b>${used}</b> tok`);
+  if (p.available) {
+    const q = tok(p.quota_tokens);
+    const lo = tok(p.q_low), hi = tok(p.q_high);
+    const rng = (lo !== null && hi !== null) ? ` <span class="rng">(${lo}–${hi})</span>` : "";
+    parts.push(`Q ≈ <b>${q === null ? "—" : q}</b>${rng}`);
+  }
+  if (p.calibrated_q !== null && p.calibrated_q !== undefined) {
+    const when = p.calibrated_at
+      ? new Date(p.calibrated_at * 1000).toLocaleString("zh-CN", {hour12: false})
+      : "未知";
+    parts.push(`<span class="calib-badge" title="任务标定时间：${esc(when)}">`
+      + `标定值 Q ≈ ${tok(p.calibrated_q)}</span>`);
+  }
+  const eta = etaText(p);
+  if (eta !== "—" && eta !== "不可用") parts.push(`预计耗尽 <b>${eta}</b>`);
+  return parts.length ? `<div class="d-pool-sub">${parts.join(" · ")}</div>` : "";
+}
+
+function poolBlock(sub, p, data) {
+  const rem = p.remaining_pct;
+  const used = p.current_pct;
+  const cls = used === null || used === undefined ? "none"
+    : used >= 90 ? "high" : used >= 70 ? "mid" : "ok";
+  const bigPct = rem === null || rem === undefined
+    ? `<div class="d-pct none">不可用<span class="u">剩余</span></div>`
+    : `<div class="d-pct ${cls}">${trimNum(rem)}%<span class="u">剩余</span></div>`;
+  const remText = rem === null || rem === undefined ? "不可用" : `${trimNum(rem)}%`;
+  const rate = p.rate_tph === null || p.rate_tph === undefined ? "不可用"
+    : `<b>${tok(p.rate_tph)}</b> tok/h`;
+  const tps = p.tps === null || p.tps === undefined ? "不可用"
+    : `<b>${fmtTps(p.tps)}</b>`;
+  return `<div class="d-pool">
+    <div class="d-pool-head">
+      <span class="d-pool-name">${esc(p.name)}</span>
+      ${resetBadge(sub, p.name, data.server_time)}
+    </div>
+    ${bigPct}
+    ${segBar(p)}
+    <div class="d-pool-sub">余量 ${remText} · 速率 ${rate} · TPS ${tps}</div>
+    ${poolQuotaLine(p)}
+  </div>`;
+}
+
+// 统计双列块：今日/近30天 各 token 用量 + price÷Q 折算费用（缺 price 或 Q 则不可用）
+function statsBlock(sub) {
+  const c = sub.cost || {};
+  const fmtY = v => (v === null || v === undefined) ? null
+    : "¥" + Number(v).toLocaleString("en-US",
+        {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const cell = (v, k, na) =>
+    `<div class="d-stat"><div class="v${na ? " na" : ""}">${v}</div>`
+    + `<div class="k">${k}</div></div>`;
+  const todayCost = fmtY(c.today_cost), monthCost = fmtY(c.month_cost);
+  let out = `<div class="d-stats">
+    ${cell(`${fmtTok(c.today_tokens || 0)}<span class="u"> tok</span>`, "今日 token 用量")}
+    ${cell(todayCost === null ? "不可用" : todayCost, "今日费用折算", todayCost === null)}
+    ${cell(`${fmtTok(c.month_tokens || 0)}<span class="u"> tok</span>`, "近 30 天 token 用量")}
+    ${cell(monthCost === null ? "不可用" : monthCost, "近 30 天费用折算", monthCost === null)}
+  </div>`;
+  if (c.unit_price === null || c.unit_price === undefined) {
+    const reason = c.price === null || c.price === undefined
+      ? `未配置订阅价格（[subscriptions.${sub.name}].price）`
+      : `「${c.pool || "?"}」池尚无可用 Q——先跑一次「任务标定」，或等监测估算收敛`;
+    out += `<div class="d-hint">费用折算不可用：${esc(reason)}</div>`;
+  } else {
+    const src = c.q_source === "calibrated" ? "标定值" : "监测估算";
+    out += `<div class="d-hint dim">折算口径：¥${num(c.price)} ÷ ${tok(c.q)} tok`
+      + `（${esc(c.pool)} 池·${src}）≈ ¥${(c.unit_price * 1000).toFixed(4)}/1k tok</div>`;
+  }
+  return out;
+}
+
+// 30 天每日 tokens 柱状图：纯前端 SVG，最高柱顶标数值，无外部库
+function chartBlock(sub) {
+  const daily = sub.daily_usage || [];
+  if (!daily.length) return "";
+  const W = 660, H = 150, padL = 4, padR = 4, padT = 16, padB = 18;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = daily.length;
+  const max = Math.max(0, ...daily.map(d => d.total || 0));
+  const bw = innerW / n;
+  const barW = Math.max(2, Math.min(14, bw * 0.6));
+  const base = padT + innerH;
+  let bars = "", maxLabel = "";
+  daily.forEach((d, i) => {
+    const v = d.total || 0;
+    const h = max > 0 ? Math.max(1.5, v / max * innerH) : 1.5;
+    const x = padL + i * bw + (bw - barW) / 2;
+    const y = base - h;
+    const isMax = max > 0 && v === max;
+    bars += `<rect class="bar${isMax ? " max" : ""}" x="${x.toFixed(1)}" y="${y.toFixed(1)}"`
+      + ` width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2">`
+      + `<title>${d.date} · ${num(v)} tok</title></rect>`;
+    if (isMax && !maxLabel)
+      maxLabel = `<text class="max-label" x="${(x + barW / 2).toFixed(1)}"`
+        + ` y="${(y - 4).toFixed(1)}" text-anchor="middle">${fmtTok(v)}</text>`;
+  });
+  const axis = `<line x1="${padL}" y1="${base}" x2="${W - padR}" y2="${base}"`
+    + ` stroke="rgba(255,255,255,.12)" stroke-width="1"/>`
+    + `<text class="axis" x="${padL}" y="${H - 4}">${daily[0].date.slice(5)}</text>`
+    + `<text class="axis" x="${W / 2}" y="${H - 4}" text-anchor="middle">`
+    + `${daily[Math.floor(n / 2)].date.slice(5)}</text>`
+    + `<text class="axis" x="${W - padR}" y="${H - 4}" text-anchor="end">`
+    + `${daily[n - 1].date.slice(5)}</text>`;
+  const empty = max === 0
+    ? `<text class="axis" x="${W / 2}" y="${padT + innerH / 2}"`
+      + ` text-anchor="middle">近 30 天暂无消耗记录</text>` : "";
+  return `<div class="d-chart"><div class="d-chart-t">近 30 天每日 token 用量</div>`
+    + `<svg viewBox="0 0 ${W} ${H}" role="img">${bars}${axis}${maxLabel}${empty}</svg></div>`;
+}
+
+function detailHtml(sub, data) {
+  const title = sub.label || sub.name;
+  const acct = sub.account ? ` <span class="acct">(${esc(sub.account)})</span>` : "";
+  const updated = sub.last_sample_rel === "无样本" ? "无样本"
+    : `${esc(sub.last_sample_rel)}已更新`;
+  const pools = (sub.pools || []).length
+    ? (sub.pools || []).map(p => poolBlock(sub, p, data)).join("")
+    : `<div class="no-pools">该订阅暂无额度池样本。</div>`;
+  const analysis = sub.analysis ? `<div class="analysis">${esc(sub.analysis)}</div>` : "";
+  return `<div class="detail glass ${sub.stale ? "stale" : ""}">
+    <div class="d-head">
+      <div class="brand" style="background:${brandColor(title)}">${esc(String(title)[0] || "?")}</div>
+      <div class="sub-title-block">
+        <div class="d-title">${esc(title)}${acct}</div>
+        <div class="d-sub">订阅 ${esc(sub.name)} · ${esc(sub.agent)} · ${esc(sub.host)}</div>
+      </div>
+      ${calBtnHtml(sub)}
+      <div class="sub-updated">${updated}${sub.stale ? " · 已过期" : ""}</div>
+    </div>
+    ${pools}
+    ${statsBlock(sub)}
+    ${chartBlock(sub)}
+    ${analysis}
+    <div class="d-foot">最常用模型：<b>${esc(sub.top_model || "不可用")}</b></div>
+  </div>`;
+}
+
+function renderTabs(subs) {
+  const tabs = $("#tabs");
+  if (!subs.length) {
+    tabs.innerHTML = "";
+    tabs.style.display = "none";
+    return;
+  }
+  tabs.style.display = "";
+  const btn = (id, label) =>
+    `<button class="tab${activeTab === id ? " on" : ""}" data-tab="${esc(id)}">${esc(label)}</button>`;
+  tabs.innerHTML = btn("overview", "概览")
+    + subs.map(s => btn(s.name, s.label || s.name)).join("");
+}
+
 function render(data) {
+  lastData = data;
   $("#ledger").textContent = "账本：" + data.ledger_path;
   const btn = $("#sample-btn");
   btn.disabled = !data.sampling_enabled;
@@ -457,14 +754,26 @@ function render(data) {
 
   const subs = $("#subs");
   const alerts = data.alerts || {};
-  if (data.n_samples === 0 && !(data.subscriptions || []).length) {
+  const subList = data.subscriptions || [];
+  // 选中 Tab 的订阅消失时退回概览
+  if (activeTab !== "overview" && !subList.some(s => s.name === activeTab))
+    activeTab = "overview";
+  renderTabs(subList);
+  if (data.n_samples === 0 && !subList.length) {
     subs.innerHTML = `<div class="empty">账本还没有样本——这是正常的初始状态。<br>
       先跑一次采样：<code>python3 -m aisubench watch --agent &lt;name&gt; --probe mock --once</code></div>`;
     return;
   }
-  subs.innerHTML = (data.subscriptions || []).length
-    ? data.subscriptions.map(s => subCard(s, alerts)).join("")
-    : `<div class="empty">样本里没有任何订阅分组，且配置 [subscriptions.*] 未声明订阅。</div>`;
+  if (!subList.length) {
+    subs.innerHTML = `<div class="empty">样本里没有任何订阅分组，且配置 [subscriptions.*] 未声明订阅。</div>`;
+    return;
+  }
+  if (activeTab === "overview") {
+    subs.innerHTML = subList.map(s => subCard(s, alerts)).join("");
+  } else {
+    const sub = subList.find(s => s.name === activeTab);
+    subs.innerHTML = detailHtml(sub, data);
+  }
   maybeNotify(data, alerts);
 }
 
@@ -513,6 +822,13 @@ async function refresh() {
     $("#meta").textContent = "状态获取失败：" + e;
   }
 }
+
+$("#tabs").addEventListener("click", ev => {
+  const tab = ev.target.closest(".tab");
+  if (!tab) return;
+  activeTab = tab.dataset.tab;
+  if (lastData) render(lastData);
+});
 
 $("#sample-btn").addEventListener("click", async () => {
   $("#sample-btn").disabled = true;

@@ -69,7 +69,9 @@ python3 -m aisubench gui --port 7788
 
 主面板顶部导航与 `/debug` 页均有「任务评测」入口（`/bench`）：与 `aisubench report` 完全同口径的任务评测页（复用 `load_results` 与 `task_metrics`），玻璃拟态风格展示汇总卡（任务数、通过率、总 token、tokens/task 全部/仅通过、元/task、元/有效任务）与逐 run 明细表（任务、agent、通过/失败、tokens、cached、TPS_gen、TPS_wall、耗时）；支持 `?agent=X&last=N` 过滤（同 `report --agent/--last`）。页面不带价格参数，元/task、元/有效任务显示「不可用」，需要订阅折算时用 CLI `report --price/--quota-tokens`；runs/ 为空时给出 `python3 -m aisubench batch --tier light --agent mock` 引导。
 
-主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。卡片头部另有「任务标定」按钮：确认后用该订阅绑定的 agent/probe 后台跑 calibration 档任务（真实消耗 token，上限 `[calibration].max_tasks`），结果写 `reports/calibration-<订阅>.json`，标定出的 Q 以"标定值"徽标与监测估算并列展示。
+主面板顶部为 CodexBar 菜单栏风格的 **Tab 栏**：「概览 | 订阅A | 订阅B | …」，纯前端切换、无路由。「概览」为**订阅监控卡片**列表：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。卡片头部另有「任务标定」按钮：确认后用该订阅绑定的 agent/probe 后台跑 calibration 档任务（真实消耗 token，上限 `[calibration].max_tasks`），结果写 `reports/calibration-<订阅>.json`，标定出的 Q 以"标定值"徽标与监测估算并列展示。
+
+每个订阅一个 Tab 进入**单订阅详细视图**：头部为套餐名（`label`）+ 相对更新时间 + 订阅来源行；每池一块——大号「X% 剩余」（剩余 = 100 − 已用，无读数显示「不可用」）、10 段圆角分段进度条（按剩余填充，颜色沿用已用%阈值）、副行「余量 X% · 速率 Y tok/h · TPS Z」与 token 明细行（已用≈/Q/标定值/预计耗尽）；该池观测到 ≥2 次重置时右上角显示「约 Xd 后重置（推断）」（按相邻样本 pct 下降点的平均周期外推，非官方口径）。其下是统计双列块——今日/近 30 天 各 token 用量与折算费用：折算单价 = `[subscriptions.*].price` ÷ 该订阅 `window` 池的 Q（标定值 `calibrated_q` 优先，其次监测估算 `quota_tokens`；缺 price 或 Q 时费用显示「不可用」并提示先标定）。再下是近 30 天每日 token 用量柱状图（纯前端 SVG，账本按日聚合，最高柱顶标数值），底部「最常用模型」（样本 `usage.model` 缺失时显示「不可用」，留待 meter 补模型名）。
 
 样本按订阅分组：watch 采样时从 `[agents.*].subscription` 取订阅名（缺省为 agent 名），旧样本归 `default`。
 
@@ -111,7 +113,7 @@ aisubench/                 扁平 Python 包与 CLI
   estimate.py              池比率估计（±g 区间）、消耗速率、ETA（只读账本）
   watch.py                 持续监测采样：meter 增量 + 探针快照落账本
   status.py                持续监测状态：collect_status 结构化结果 + 中文监控表渲染
-  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，/api/status + /api/sample + /api/calibrate + /bench 任务评测页）
+  gui.py dashboard.html    本地 Web 监控面板（127.0.0.1，CodexBar 风格 Tab 页；/api/status 附账本聚合的 daily_usage/reset_events/cost + /api/sample + /api/calibrate + /bench 任务评测页）
   config.py                aisubench.toml / aisubench.local.toml 加载
   meters/                  mock、API、Kimi、Claude 计量适配器
   quota/                   mock、ArkCLI、人工额度探针

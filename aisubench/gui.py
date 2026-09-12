@@ -9,7 +9,12 @@
                        每 5 秒拉一次 ``/api/status``，无任何外部 CDN 资源）；
 - ``GET /api/status``  ``status.collect_subscriptions`` 的按订阅分组 JSON
                        （附带 alerts 开关表等面板辅助字段），与 CLI ``status``
-                       同口径同数字；
+                       同口径同数字；另在 gui 层按账本聚合附加字段：每订阅
+                       ``daily_usage``（近 30 天按日 usage 累计）、
+                       ``reset_events``（相邻样本池 pct 下降点）、
+                       ``top_model`` 与 ``cost``（price÷Q 折算费用，Q 取
+                       calibrated_q 优先、quota_tokens 其次），每池附
+                       ``remaining_pct``；
 - ``POST /api/sample`` 立即采样一次（复用 watch 的 ``WatchSession.sample_once``，
                        启动时需传 ``--agent/--probe``，否则返回 403 且按钮置灰；
                        与后台采样线程共用一把锁防并发重入，重入返回 409）；
@@ -48,11 +53,12 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -63,9 +69,9 @@ from .config import ROOT, load_config
 from .metrics import task_metrics, total_tokens, tps_gen, tps_wall
 from .report import load_results
 from .runner import Runner
-from .ledger import DEFAULT_LEDGER
-from .status import (DEFAULT_WINDOW_HOURS, collect_status,
-                     collect_subscriptions)
+from .ledger import DEFAULT_LEDGER, load_samples
+from .status import (DEFAULT_SUBSCRIPTION, DEFAULT_WINDOW_HOURS,
+                     collect_status, collect_subscriptions)
 from .watch import (DEFAULT_CLEAN_WINDOW_SEC, DEFAULT_INTERVAL_SEC, OFFSETS_FILE,
                     PROBES, WatchSession, _resolve_meter, _resolve_path)
 
@@ -121,6 +127,7 @@ class GuiState:
             last is not None and self.sample_interval_sec
             and status["server_time"] - last > 3 * self.sample_interval_sec)
         self._attach_calibration(status)
+        self._attach_ledger_extras(status)
         return status
 
     def set_alert(self, key: str, enabled: bool) -> dict:
@@ -235,6 +242,32 @@ class GuiState:
                 pool["calibrated_q_high"] = window.get("q_upper")
                 pool["calibrated_at"] = mtime
 
+    def _attach_ledger_extras(self, status: dict) -> None:
+        """账本侧附加字段（只做加法，聚合在 gui 层，不改 status/estimate）。
+
+        每订阅：``daily_usage``（近 30 天按日 usage 累计，定长 30 项、缺日补 0）、
+        ``reset_events``（相邻样本间池 pct 下降点）、``top_model``（usage.model
+        加权最多者，样本无该字段则 None）、``cost``（price÷Q 折算费用）。
+        每池：``remaining_pct``（100 − 当前已用%，无读数为 None）。
+        """
+        groups: dict[str, list[dict]] = {}
+        for sample in load_samples(self.ledger_path):
+            groups.setdefault(_subscription_key(sample), []).append(sample)
+        now = float(status.get("server_time") or time.time())
+        subs_cfg = self.config.get("subscriptions") or {}
+        for sub in status.get("subscriptions") or []:
+            samples = groups.get(str(sub.get("name")), [])
+            daily = _daily_usage(samples, now)
+            sub["daily_usage"] = daily
+            sub["reset_events"] = _reset_events(samples)
+            sub["top_model"] = _top_model(samples)
+            sub["cost"] = _cost_summary(
+                    sub, subs_cfg.get(sub.get("name")) or {}, daily)
+            for pool in sub.get("pools") or []:
+                pct = _num(pool.get("current_pct"))
+                pool["remaining_pct"] = (None if pct is None
+                                         else round(100.0 - pct, 4))
+
 
 def _load_calibration(reports_dir: Path, subscription) -> tuple[dict, float] | None:
     """读 ``reports/calibration-<订阅>.json``，返回 (数据, 文件 mtime)；缺失/损坏 → None。"""
@@ -243,6 +276,135 @@ def _load_calibration(reports_dir: Path, subscription) -> tuple[dict, float] | N
         return json.loads(path.read_text(encoding="utf-8")), path.stat().st_mtime
     except (OSError, json.JSONDecodeError):
         return None
+
+
+DAILY_USAGE_DAYS = 30
+
+
+def _subscription_key(sample) -> str:
+    """样本的订阅归属：与 status 同口径，``subscription`` 缺失/空 → ``default``。"""
+    if not isinstance(sample, dict):
+        return DEFAULT_SUBSCRIPTION
+    value = sample.get("subscription")
+    text = str(value).strip() if value is not None else ""
+    return text or DEFAULT_SUBSCRIPTION
+
+
+def _daily_usage(samples: list[dict], now: float,
+                 days: int = DAILY_USAGE_DAYS) -> list[dict]:
+    """近 ``days`` 天（含今天，本地时区）按日聚合 usage 增量。
+
+    返回定长 ``days`` 项 ``[{date, input, cached, output, total}]``（date 为
+    ISO 本地日期，首项最早），无样本的日期补 0，供前端直接渲染 30 天柱状图；
+    缺 ``ts``、未来或超出窗口的样本不计入。
+    """
+    today = datetime.fromtimestamp(now).date()
+    start = today - timedelta(days=days - 1)
+    buckets: dict = {}
+    for sample in samples or []:
+        stamp = _num(sample.get("ts")) if isinstance(sample, dict) else None
+        if stamp is None:
+            continue
+        day = datetime.fromtimestamp(stamp).date()
+        if day < start or day > today:
+            continue
+        usage = sample.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        bucket = buckets.setdefault(day, {"input": 0, "cached": 0, "output": 0})
+        for key in bucket:
+            value = _num(usage.get(key))
+            if value is not None and value > 0:
+                bucket[key] += int(value)
+    result = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        bucket = buckets.get(day) or {"input": 0, "cached": 0, "output": 0}
+        result.append({"date": day.isoformat(), **bucket,
+                       "total": bucket["input"] + bucket["cached"]
+                       + bucket["output"]})
+    return result
+
+
+def _reset_events(samples: list[dict]) -> list[dict]:
+    """相邻样本间池 pct 的下降点：[{ts, pool, from_pct, to_pct}]，ts 取下降后样本。"""
+    events: list[dict] = []
+    previous: dict[str, float] = {}
+    for sample in samples or []:
+        if not isinstance(sample, dict):
+            continue
+        stamp = _num(sample.get("ts"))
+        pools = sample.get("pools")
+        if stamp is None or not isinstance(pools, dict):
+            continue
+        for name, value in pools.items():
+            pct = _num(value)
+            if pct is None:
+                continue
+            key = str(name)
+            if key in previous and pct < previous[key]:
+                events.append({"ts": stamp, "pool": key,
+                               "from_pct": previous[key], "to_pct": pct})
+            previous[key] = pct
+    return events
+
+
+def _top_model(samples: list[dict]) -> str | None:
+    """按 usage 总 token 加权的最常用模型名；样本 usage 无 model 字段 → None。"""
+    totals: dict[str, int] = {}
+    for sample in samples or []:
+        usage = sample.get("usage") if isinstance(sample, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        model = usage.get("model")
+        if model in (None, ""):
+            continue
+        totals[str(model)] = totals.get(str(model), 0) + total_tokens(usage)
+    return max(totals, key=totals.get) if totals else None
+
+
+def _cost_summary(sub: dict, sub_cfg: dict, daily_usage: list[dict]) -> dict:
+    """订阅折算费用：单价 = ``price`` ÷ ``Q``（calibrated_q 优先，quota_tokens 其次）。
+
+    ``Q`` 取 ``sub_cfg['window']`` 指定的池（price 即该窗口整池价格），未配置
+    ``window`` 时取第一个池；price/Q 任一缺失或非法 → 费用字段为 None，前端
+    显示「不可用」并提示先标定。``today_tokens``/``month_tokens`` 由
+    ``daily_usage`` 末项与全窗口求和得出。
+    """
+    price = _num(sub_cfg.get("price"))
+    pools = sub.get("pools") or []
+    window = str(sub_cfg.get("window") or "").strip()
+    pool = next((p for p in pools if str(p.get("name")) == window), None) \
+        if window else None
+    if pool is None and pools:
+        pool = pools[0]
+    q = source = None
+    if pool is not None:
+        calibrated = _num(pool.get("calibrated_q"))
+        estimated = _num(pool.get("quota_tokens"))
+        if calibrated is not None and calibrated > 0:
+            q, source = calibrated, "calibrated"
+        elif estimated is not None and estimated > 0:
+            q, source = estimated, "estimated"
+    unit = (price / q if price is not None and price > 0
+            and q is not None and q > 0 else None)
+    today_tokens = daily_usage[-1]["total"] if daily_usage else 0
+    month_tokens = sum(day["total"] for day in daily_usage)
+    return {"price": price, "pool": pool.get("name") if pool else None,
+            "q": q, "q_source": source, "unit_price": unit,
+            "today_tokens": today_tokens, "month_tokens": month_tokens,
+            "today_cost": today_tokens * unit if unit is not None else None,
+            "month_cost": month_tokens * unit if unit is not None else None}
+
+
+def _num(value) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 class DashboardServer(ThreadingHTTPServer):

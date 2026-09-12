@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import io
 import json
 import os
@@ -30,10 +31,14 @@ def subs_by_name(data):
     return {sub["name"]: sub for sub in data.get("subscriptions") or []}
 
 
-def mk(ts, pools, input=0, cached=0, output=0, clean=True):
-    return {"ts": float(ts), "agent": "t", "source": "watch",
-            "usage": {"input": input, "cached": cached, "output": output, "requests": 1},
-            "pools": pools, "clean": clean}
+def mk(ts, pools, input=0, cached=0, output=0, clean=True, subscription=None):
+    sample = {"ts": float(ts), "agent": "t", "source": "watch",
+              "usage": {"input": input, "cached": cached, "output": output,
+                        "requests": 1},
+              "pools": pools, "clean": clean}
+    if subscription is not None:
+        sample["subscription"] = subscription
+    return sample
 
 
 def kimi_line(input_other=10, output=5, cache_read=100, cache_creation=2) -> str:
@@ -327,6 +332,172 @@ class GuiServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 fix.get("/nope")
             self.assertEqual(ctx.exception.code, 404)
+
+
+class LedgerExtrasTests(unittest.TestCase):
+    """gui 层账本聚合字段：daily_usage / reset_events / remaining_pct / cost / top_model。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ledger = self.root / "ledger.jsonl"
+        self.reports = self.root / "reports"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def make_state(self, config=None, **kwargs):
+        cfg = config or CONFIG
+        cfg = {**cfg, "watch": {**(cfg.get("watch") or {}),
+                                "interval_sec": 300,
+                                "alerts_file": str(self.root / "alerts.json")}}
+        return GuiState(config=cfg, ledger_path=self.ledger,
+                        window_hours=24.0, reports_dir=self.reports, **kwargs)
+
+    def day_ts(self, days_ago, hour=12):
+        """本地时区 N 天前某时刻的 epoch（对齐 _daily_usage 的按日分桶口径）。"""
+        day = datetime.now().date() - timedelta(days=days_ago)
+        return datetime(day.year, day.month, day.day, hour).timestamp()
+
+    def test_daily_usage_aggregation_hand_calc(self):
+        # 昨天两样本合计 input=100 cached=200 output=50；今天 input=10；
+        # 40 天前的样本超出 30 天窗口不计入。
+        samples = [mk(self.day_ts(1, 10), {"5h": 1}, input=100, output=50),
+                   mk(self.day_ts(1, 13), {"5h": 2}, cached=200),
+                   mk(self.day_ts(0), {"5h": 3}, input=10),
+                   mk(self.day_ts(40), {"5h": 0}, input=999)]
+        for item in samples:
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        subs = subs_by_name(data)
+        daily = subs["default"]["daily_usage"]
+        today = datetime.now().date()
+        self.assertEqual(len(daily), 30)
+        self.assertEqual(daily[0]["date"],
+                         (today - timedelta(days=29)).isoformat())
+        self.assertEqual(daily[-1]["date"], today.isoformat())
+        self.assertEqual(daily[28], {"date": (today - timedelta(days=1)).isoformat(),
+                                     "input": 100, "cached": 200,
+                                     "output": 50, "total": 350})
+        self.assertEqual(daily[29]["input"], 10)
+        self.assertEqual(daily[29]["total"], 10)
+        # 窗口外样本（40 天前 999 tokens）不计入任何桶
+        self.assertEqual(sum(d["total"] for d in daily), 360)
+        # 无样本订阅：仍为定长 30 项、全 0（前端直接渲染空图）
+        demo_daily = subs["demo"]["daily_usage"]
+        self.assertEqual(len(demo_daily), 30)
+        self.assertEqual(sum(d["total"] for d in demo_daily), 0)
+
+    def test_reset_events_and_remaining_pct(self):
+        # 相邻样本 pct 下降点：55→12 与 20→5 各记一次重置事件
+        samples = [mk(0, {"5h": 40}), mk(3600, {"5h": 55}, input=750),
+                   mk(7200, {"5h": 12}, input=100), mk(10800, {"5h": 20}, input=50),
+                   mk(14400, {"5h": 5}, input=10)]
+        for item in samples:
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        subs = subs_by_name(data)
+        sub = subs["default"]
+        self.assertEqual(sub["reset_events"], [
+            {"ts": 7200.0, "pool": "5h", "from_pct": 55.0, "to_pct": 12.0},
+            {"ts": 14400.0, "pool": "5h", "from_pct": 20.0, "to_pct": 5.0}])
+        # 每池 remaining_pct = 100 − 当前已用%；无样本订阅/池为 None
+        self.assertEqual(sub["pools"][0]["remaining_pct"], 95.0)
+        demo = subs["demo"]
+        self.assertIsNone(demo["pools"][0]["remaining_pct"])
+        self.assertEqual(demo["reset_events"], [])
+        # 样本 usage 无 model 字段 → top_model=None（前端显示「不可用」）
+        self.assertIsNone(sub["top_model"])
+
+    def test_cost_estimated_q_hand_calc(self):
+        # 折算：unit = price ÷ Q（Q 取 window 池的估算 quota_tokens）
+        config = {"subscriptions": {"demo": {"pools": ["5h"], "price": 30.0,
+                                             "window": "5h"}},
+                  "calibration": {"granularity_pct": 1.0},
+                  "watch": {"interval_sec": 300}}
+        t0 = self.day_ts(0)
+        samples = [mk(t0 - 7200, {"5h": 0}, subscription="demo"),
+                   mk(t0 - 3600, {"5h": 1}, input=500, subscription="demo"),
+                   mk(t0, {"5h": 3}, input=500, subscription="demo")]
+        for item in samples:
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state(config)) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        cost = subs_by_name(data)["demo"]["cost"]
+        # Σtokens=1000 / ΣΔ=3 → Q=33333.33；unit=30/Q；今/月 tokens=1000
+        self.assertEqual(cost["price"], 30.0)
+        self.assertEqual(cost["pool"], "5h")
+        self.assertEqual(cost["q_source"], "estimated")
+        self.assertAlmostEqual(cost["q"], 33333.33, places=2)
+        self.assertAlmostEqual(cost["unit_price"], 30.0 / (1000.0 / 3 * 100),
+                               places=10)
+        self.assertEqual(cost["today_tokens"], 1000)
+        self.assertEqual(cost["month_tokens"], 1000)
+        self.assertAlmostEqual(cost["today_cost"], 1000 * 30.0 / 33333.3333,
+                               places=4)
+        self.assertAlmostEqual(cost["month_cost"], cost["today_cost"], places=10)
+
+    def test_cost_calibrated_q_priority(self):
+        # 标定报告存在时 Q 取 calibrated_q（覆盖估算 quota_tokens）
+        config = {"subscriptions": {"demo": {"pools": ["5h"], "price": 30.0,
+                                             "window": "5h"}},
+                  "calibration": {"granularity_pct": 1.0},
+                  "watch": {"interval_sec": 300}}
+        t0 = self.day_ts(0)
+        for item in (mk(t0 - 3600, {"5h": 1}, subscription="demo"),
+                     mk(t0, {"5h": 3}, input=1000, subscription="demo")):
+            append_sample(self.ledger, item)
+        self.reports.mkdir()
+        (self.reports / "calibration-demo.json").write_text(json.dumps({
+            "plan": "demo", "tasks": 2, "tokens": 800,
+            "windows": [{"name": "5h", "quota_tokens": 80000.0,
+                         "q_lower": 70000.0, "q_upper": 90000.0}]}),
+            encoding="utf-8")
+        with ServerFixture(self.make_state(config)) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        cost = subs_by_name(data)["demo"]["cost"]
+        self.assertEqual(cost["q"], 80000.0)
+        self.assertEqual(cost["q_source"], "calibrated")
+        self.assertAlmostEqual(cost["unit_price"], 30.0 / 80000.0, places=10)
+        self.assertAlmostEqual(cost["month_cost"], 1000 * 30.0 / 80000.0,
+                               places=6)
+
+    def test_cost_unavailable_without_price_or_q(self):
+        # 无 price → 费用 None；有 price 但池无样本（无 Q）→ 费用同样 None
+        config = {"subscriptions": {
+            "nop": {"pools": ["5h"]},
+            "noq": {"pools": ["5h"], "price": 30.0, "window": "5h"}},
+            "calibration": {"granularity_pct": 1.0},
+            "watch": {"interval_sec": 300}}
+        append_sample(self.ledger,
+                      mk(self.day_ts(0), {"5h": 3}, input=100,
+                         subscription="nop"))
+        with ServerFixture(self.make_state(config)) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        subs = subs_by_name(data)
+        nop = subs["nop"]["cost"]
+        self.assertIsNone(nop["price"])
+        self.assertIsNone(nop["unit_price"])
+        self.assertIsNone(nop["today_cost"])
+        self.assertIsNone(nop["month_cost"])
+        self.assertEqual(nop["today_tokens"], 100)
+        noq = subs["noq"]["cost"]
+        self.assertEqual(noq["price"], 30.0)
+        self.assertIsNone(noq["q"])
+        self.assertIsNone(noq["q_source"])
+        self.assertIsNone(noq["unit_price"])
+        self.assertIsNone(noq["month_cost"])
+
+    def test_dashboard_html_contains_tab_and_chart_markup(self):
+        with ServerFixture(self.make_state()) as fix:
+            body = fix.get("/").read().decode("utf-8")
+        # CodexBar 风格 Tab 栏与单订阅视图渲染函数都应在静态页里
+        for needle in ('id="tabs"', "概览", "seg-bar", "近 30 天每日 token 用量",
+                       "最常用模型", "detailHtml", "renderTabs", "chartBlock",
+                       "剩余", "后重置"):
+            self.assertIn(needle, body)
 
 
 class BenchPageTests(unittest.TestCase):
