@@ -91,7 +91,11 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
     返回与 ``collect_status`` 相同的全局元数据键，但 ``pools`` 换成
     ``subscriptions``：每项 {name, label, account, agent, host,
     last_sample_ts, last_sample_rel, stale, n_samples, external_tokens,
-    analysis, pools}；``pools`` 与 ``collect_status`` 的池 dict 同结构。
+    analysis, usage_totals, pools}；``pools`` 与 ``collect_status`` 的池
+    dict 同结构。``usage_totals`` 为该订阅监测跨度内样本 usage 的累计
+    {input, cached, output, total, requests}（无样本时为 None）。
+    顶层另有 ``usage_totals``（全部样本同口径累计）与 ``window_usage``
+    （仅最近 ``window_hours`` 窗口内样本的累计，供面板头部展示）。
     ``stale`` 判定同 GUI 口径：最新样本距今超过参考间隔 3 倍（参考间隔取
     ``stale_interval_sec`` 或 ``[watch].interval_sec``，默认 300s）。
     """
@@ -133,11 +137,17 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
             "n_samples": int(meta.get("n_samples", len(sub_samples))),
             "external_tokens": int(meta.get("external_tokens", 0) or 0),
             "analysis": analysis,
+            "usage_totals": _usage_totals(sub_samples),
             "pools": pools,
         })
 
     all_stamps = [stamp for stamp in (_num(s.get("ts")) for s in samples)
                   if stamp is not None]
+    last_ts = max(all_stamps) if all_stamps else None
+    window_floor = (last_ts - window * 3600.0) if last_ts is not None else None
+    window_samples = [s for s in samples
+                      if window_floor is not None
+                      and (_num(s.get("ts")) or 0.0) >= window_floor]
     _, overall_meta = _collect_pools(config, samples, None, window, clean_only)
     return {
         "ledger_path": str(ledger_path),
@@ -147,9 +157,36 @@ def collect_subscriptions(config: dict, ledger: str | Path | None = None,
         "n_samples": int(overall_meta.get("n_samples", len(samples))),
         "span_hours": float(overall_meta.get("span_hours", 0.0)),
         "external_tokens": int(overall_meta.get("external_tokens", 0) or 0),
-        "last_sample_ts": max(all_stamps) if all_stamps else None,
+        "last_sample_ts": last_ts,
+        "usage_totals": _usage_totals(samples),
+        "window_usage": _usage_totals(window_samples),
         "subscriptions": subscriptions,
     }
+
+
+def _usage_totals(samples: list[dict]) -> dict | None:
+    """一组样本 usage 的累计拆分：{input, cached, output, total, requests}。
+
+    无样本（或样本都没有 usage 字段）时返回 None，前端据此显示「暂无」
+    而不是假 0；单键缺失按 0 计（与 estimate 的口径一致）。
+    """
+    if not samples:
+        return None
+    seen = False
+    totals = {"input": 0, "cached": 0, "output": 0, "requests": 0}
+    for sample in samples:
+        usage = sample.get("usage") if isinstance(sample, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        seen = True
+        for key in totals:
+            value = _num(usage.get(key))
+            if value is not None and value > 0:
+                totals[key] += int(value)
+    if not seen:
+        return None
+    totals["total"] = totals["input"] + totals["cached"] + totals["output"]
+    return totals
 
 
 def _resolve_inputs(config: dict, ledger: str | Path | None,

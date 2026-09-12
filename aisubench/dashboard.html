@@ -6,90 +6,197 @@
 <title>AISUBench 监控面板</title>
 <style>
 :root {
-  --bg: #0d1117; --panel: #161b22; --border: #30363d;
-  --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
-  --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  --bg: #0a0e1a;
+  --fg: #e8edf6; --dim: #93a0b4; --dim2: #6b7890;
+  --accent: #6ea8ff; --accent2: #a78bfa;
+  --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+  --glass: rgba(255, 255, 255, .055);
+  --glass-border: rgba(255, 255, 255, .11);
+  --glass-shadow: 0 10px 34px rgba(2, 6, 18, .45);
 }
 * { box-sizing: border-box; }
 body {
-  margin: 0; background: var(--bg); color: var(--fg);
-  font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  margin: 0; color: var(--fg); min-height: 100vh;
+  font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
 }
-.wrap { max-width: 860px; margin: 0 auto; padding: 16px; }
+/* 固定不动的低饱和彩色光斑：给毛玻璃提供可模糊的层次 */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(52vw 52vw at 12% -6%, rgba(56, 89, 199, .34), transparent 62%),
+    radial-gradient(46vw 46vw at 88% 18%, rgba(124, 78, 189, .28), transparent 60%),
+    radial-gradient(58vw 58vw at 55% 105%, rgba(23, 116, 128, .30), transparent 64%),
+    var(--bg);
+}
+.wrap { max-width: 900px; margin: 0 auto; padding: 22px 18px 40px; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-h1 { font-size: 18px; margin: 0; font-weight: 600; }
-.sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
-button {
-  background: #21262d; color: var(--fg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+h1 {
+  font-size: 21px; margin: 0; font-weight: 650; letter-spacing: .01em;
+  background: linear-gradient(92deg, #eaf0ff, #b9c8ff 60%, #a78bfa);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-button:hover:not(:disabled) { background: #30363d; }
+.sub { color: var(--dim); font-size: 12px; margin-top: 3px; }
+button {
+  background: rgba(255, 255, 255, .07); color: var(--fg);
+  border: 1px solid var(--glass-border); border-radius: 10px;
+  padding: 7px 16px; cursor: pointer; font-size: 13px;
+  backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  transition: transform .15s, border-color .15s, background .15s;
+}
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, .12); border-color: rgba(255, 255, 255, .22);
+  transform: translateY(-1px);
+}
 button:disabled { opacity: .45; cursor: not-allowed; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 #debug-link { font-size: 13px; align-self: center; }
-#meta {
-  margin: 12px 0; padding: 10px 14px; font-size: 13px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
 }
-#meta.stale { opacity: .55; }
+
+/* 全局元信息卡：统计行 + 样本口径说明 */
+#meta { margin: 14px 0 16px; padding: 14px 18px; font-size: 13px; }
+#meta.stale { opacity: .6; }
+.stats { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 8px; }
+.stat .v {
+  font-size: 21px; font-weight: 650; letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;
+}
+.stat .v .u { font-size: 12px; font-weight: 500; color: var(--dim); margin-left: 2px; }
+.stat .k { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
+.meta-line { color: var(--dim); }
 .warn-text { color: var(--warn); }
-#subs { display: flex; flex-direction: column; gap: 14px; }
+
+#subs { display: flex; flex-direction: column; gap: 16px; }
 
 /* 订阅卡片 */
-.sub-card {
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 10px; padding: 14px 16px;
-}
-.sub-card.stale { opacity: .55; }
-.sub-head { display: flex; align-items: center; gap: 12px; }
+.sub-card { padding: 16px 18px; transition: transform .18s, border-color .18s; }
+.sub-card:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, .2); }
+.sub-card.stale { opacity: .6; }
+.sub-head { display: flex; align-items: center; gap: 13px; }
 .brand {
-  width: 38px; height: 38px; border-radius: 9px; flex: none;
+  width: 40px; height: 40px; border-radius: 12px; flex: none;
   display: flex; align-items: center; justify-content: center;
   font-size: 17px; font-weight: 700; color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 4px 14px rgba(0, 0, 0, .3);
 }
 .sub-title-block { flex: 1; min-width: 0; }
-.sub-title { font-weight: 600; font-size: 15px; }
+.sub-title { font-weight: 600; font-size: 15.5px; }
 .sub-title .acct { color: var(--dim); font-weight: 400; font-size: 13px; }
 .sub-src { color: var(--dim); font-size: 12px; margin-top: 1px; }
-.sub-updated { color: var(--dim); font-size: 12px; flex: none; }
+.sub-updated { color: var(--dim); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
 
-/* 池行：池名 + 进度条 + 百分比 + ETA + 铃铛 */
-.pool-rows { margin-top: 12px; display: flex; flex-direction: column; gap: 9px; }
+/* 池行：主行（池名/进度条/%/ETA/铃铛）+ token 次级行 */
+.pool-rows { margin-top: 14px; display: flex; flex-direction: column; gap: 13px; }
 .pool-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .p-name { width: 52px; flex: none; color: var(--fg); font-variant-numeric: tabular-nums; }
-.p-bar { flex: 1; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
-.p-fill { height: 100%; background: var(--ok); transition: width .4s; }
-.p-fill.mid { background: var(--warn); }
-.p-fill.high { background: var(--bad); }
-.p-fill.none { background: var(--border); }
-.p-pct { width: 44px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
-.p-eta { width: 64px; flex: none; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+.p-bar {
+  flex: 1; height: 7px; border-radius: 4px; overflow: hidden;
+  background: rgba(255, 255, 255, .08);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3);
+}
+.p-fill {
+  height: 100%; border-radius: 4px; transition: width .4s;
+  background: linear-gradient(90deg, #34d399, #6ee7b7);
+  box-shadow: 0 0 8px rgba(52, 211, 153, .55);
+}
+.p-fill.mid {
+  background: linear-gradient(90deg, #fbbf24, #fde68a);
+  box-shadow: 0 0 8px rgba(251, 191, 36, .55);
+}
+.p-fill.high {
+  background: linear-gradient(90deg, #f87171, #fca5a5);
+  box-shadow: 0 0 8px rgba(248, 113, 113, .55);
+}
+.p-fill.none { background: rgba(255, 255, 255, .14); box-shadow: none; }
+.p-pct {
+  width: 46px; flex: none; text-align: right;
+  font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.p-eta {
+  width: 66px; flex: none; text-align: right; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.p-tokens {
+  margin: 5px 0 0 62px; display: flex; gap: 8px 18px; flex-wrap: wrap;
+  font-size: 12px; color: var(--dim);
+}
+.p-tokens .t { font-variant-numeric: tabular-nums; }
+.p-tokens .t b {
+  color: var(--fg); font-weight: 600; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.p-tokens .t .rng { color: var(--dim2); font-size: 11.5px; }
+.p-tokens .t.unavail { color: var(--dim2); }
+
 .bell {
-  flex: none; width: 26px; height: 26px; padding: 0; border-radius: 6px;
+  flex: none; width: 27px; height: 27px; padding: 0; border-radius: 9px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--dim);
 }
 .bell svg { width: 14px; height: 14px; }
-.bell.on { color: var(--accent); border-color: var(--accent); }
+.bell.on {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 0 10px rgba(110, 168, 255, .5);
+}
+.bell.on svg { fill: rgba(255, 255, 255, .9); }
 .recovered {
   flex: none; font-size: 11px; color: var(--ok);
-  border: 1px solid var(--ok); border-radius: 10px; padding: 0 8px;
+  border: 1px solid rgba(52, 211, 153, .5); border-radius: 10px; padding: 0 8px;
+  background: rgba(52, 211, 153, .1);
 }
+
+/* 订阅汇总行：监测跨度内累计 tokens */
+.sub-total {
+  margin-top: 14px; padding-top: 11px;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  display: flex; align-items: baseline; gap: 8px 16px; flex-wrap: wrap;
+  font-size: 12px; color: var(--dim);
+}
+.sub-total .total-v {
+  font-size: 17px; font-weight: 650; color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.sub-total .total-v .u { font-size: 11.5px; font-weight: 500; color: var(--dim); }
+.sub-total .brk { font-variant-numeric: tabular-nums; }
+.sub-total .brk b { color: var(--fg); font-weight: 600; }
+
 .analysis {
-  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, .08);
   color: var(--warn); font-size: 12.5px;
 }
 .no-pools { margin-top: 12px; color: var(--dim); font-size: 12.5px; }
 
 .empty {
-  padding: 28px; text-align: center; color: var(--dim);
-  background: var(--panel); border: 1px dashed var(--border); border-radius: 8px;
+  padding: 30px; text-align: center; color: var(--dim);
+  border: 1px dashed rgba(255, 255, 255, .18); border-radius: 18px;
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
 }
-.empty code { color: var(--accent); background: #21262d; padding: 2px 6px; border-radius: 4px; }
+.empty code {
+  color: var(--accent); background: rgba(255, 255, 255, .08);
+  padding: 2px 6px; border-radius: 6px;
+}
 #toast {
-  position: fixed; bottom: 16px; right: 16px; display: none; font-size: 13px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px;
+  position: fixed; bottom: 18px; right: 18px; display: none; font-size: 13px;
+  padding: 9px 16px; border-radius: 12px;
+  background: rgba(30, 38, 56, .75); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: var(--glass-shadow);
+}
+@media (max-width: 640px) {
+  .p-tokens { margin-left: 0; }
+  .stats { gap: 18px; }
 }
 </style>
 </head>
@@ -103,7 +210,7 @@ a:hover { text-decoration: underline; }
     <a id="debug-link" href="/debug" hidden>调试模式</a>
     <button id="sample-btn" disabled>立即采样</button>
   </header>
-  <section id="meta">加载中…</section>
+  <section id="meta" class="glass">加载中…</section>
   <main id="subs"></main>
 </div>
 <div id="toast"></div>
@@ -117,6 +224,16 @@ const num = x => (x === null || x === undefined) ? null
 const fixed = (x, d) => (x === null || x === undefined) ? null : Number(x).toFixed(d);
 const trimNum = x => Number(Number(x).toFixed(1));
 
+// token 大数字缩写：950 → "950"，12,340 → "12.3k"，1,800,000 → "1.8M"
+const fmtTok = x => {
+  if (x === null || x === undefined) return null;
+  const n = Number(x);
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(Math.round(n));
+};
+const tok = x => fmtTok(x) === null ? null : fmtTok(x);
+
 // 已弹过通知的恢复事件（key@lastSampleTs），同一恢复不重复弹
 const notified = new Set();
 
@@ -128,7 +245,7 @@ const BELL_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
 function brandColor(label) {
   let hash = 0;
   for (const ch of String(label)) hash = (hash * 31 + ch.codePointAt(0)) % 360;
-  return `hsl(${hash}, 55%, 42%)`;
+  return `linear-gradient(135deg, hsl(${hash}, 52%, 46%), hsl(${(hash + 40) % 360}, 55%, 34%))`;
 }
 
 function etaText(p) {
@@ -144,6 +261,30 @@ function etaText(p) {
   return `${m}m`;
 }
 
+// 池的 token 次级行：已用≈ · 100%当量Q（区间）· 速率
+function poolTokenRow(p) {
+  if (!p.has_samples)
+    return `<div class="p-tokens"><span class="t unavail">账本中暂无该池样本</span></div>`;
+  const used = tok(p.used_tokens);
+  const parts = [];
+  parts.push(used === null
+    ? `<span class="t unavail">已用 ≈ —</span>`
+    : `<span class="t">已用 ≈ <b>${used}</b> tok</span>`);
+  if (!p.available) {
+    parts.push(`<span class="t unavail">100% 当量 Q：数据不足(Δ 未超粒度)</span>`);
+  } else {
+    const q = tok(p.quota_tokens);
+    const lo = tok(p.q_low), hi = tok(p.q_high);
+    const rng = (lo !== null && hi !== null) ? ` <span class="rng">(${lo}–${hi})</span>`
+      : lo !== null ? ` <span class="rng">(≥${lo})</span>` : "";
+    parts.push(`<span class="t">Q ≈ <b>${q === null ? "—" : q}</b>${rng}</span>`);
+  }
+  parts.push(p.rate_tph === null || p.rate_tph === undefined
+    ? `<span class="t unavail">速率：不可用</span>`
+    : `<span class="t"><b>${tok(p.rate_tph)}</b> tok/h</span>`);
+  return `<div class="p-tokens">${parts.join("")}</div>`;
+}
+
 function poolRow(sub, p, alerts) {
   const pct = p.current_pct;
   const width = Math.max(0, Math.min(100, pct === null ? 0 : pct));
@@ -153,14 +294,31 @@ function poolRow(sub, p, alerts) {
   const recovered = p.prev_pct !== null && p.prev_pct !== undefined
     && pct !== null && pct < p.prev_pct;
   const badge = recovered && alertOn ? `<span class="recovered">已恢复</span>` : "";
-  return `<div class="pool-row">
-    <span class="p-name">${esc(p.name)}</span>
-    <div class="p-bar"><div class="p-fill ${cls}" style="width:${width}%"></div></div>
-    <span class="p-pct">${pct === null ? "—" : trimNum(pct) + "%"}</span>
-    <span class="p-eta" title="预计耗尽剩余时间">${etaText(p)}</span>
-    <button class="bell ${alertOn ? "on" : ""}" data-key="${esc(key)}"
-      title="额度恢复时提醒我">${BELL_SVG}</button>
-    ${badge}
+  return `<div class="pool">
+    <div class="pool-row">
+      <span class="p-name">${esc(p.name)}</span>
+      <div class="p-bar"><div class="p-fill ${cls}" style="width:${width}%"></div></div>
+      <span class="p-pct">${pct === null ? "—" : trimNum(pct) + "%"}</span>
+      <span class="p-eta" title="预计耗尽剩余时间">${etaText(p)}</span>
+      <button class="bell ${alertOn ? "on" : ""}" data-key="${esc(key)}"
+        title="额度恢复时提醒我">${BELL_SVG}</button>
+      ${badge}
+    </div>
+    ${poolTokenRow(p)}
+  </div>`;
+}
+
+// 订阅汇总行：跨度内累计 tokens 总量 + input/cached/output 拆分
+function subTotalRow(sub) {
+  const t = sub.usage_totals;
+  if (!t) return `<div class="sub-total"><span>累计消耗：暂无 usage 数据</span></div>`;
+  return `<div class="sub-total">
+    <span>累计消耗</span>
+    <span class="total-v">${tok(t.total)}<span class="u"> tok</span></span>
+    <span class="brk">输入 <b>${tok(t.input)}</b></span>
+    <span class="brk">缓存 <b>${tok(t.cached)}</b></span>
+    <span class="brk">输出 <b>${tok(t.output)}</b></span>
+    <span class="brk">请求 <b>${num(t.requests)}</b></span>
   </div>`;
 }
 
@@ -173,7 +331,7 @@ function subCard(sub, alerts) {
     ? `<div class="pool-rows">${sub.pools.map(p => poolRow(sub, p, alerts)).join("")}</div>`
     : `<div class="no-pools">该订阅暂无额度池样本。</div>`;
   const analysis = sub.analysis ? `<div class="analysis">${esc(sub.analysis)}</div>` : "";
-  return `<div class="sub-card ${sub.stale ? "stale" : ""}">
+  return `<div class="sub-card glass ${sub.stale ? "stale" : ""}">
     <div class="sub-head">
       <div class="brand" style="background:${brandColor(title)}">${esc(String(title)[0] || "?")}</div>
       <div class="sub-title-block">
@@ -183,6 +341,7 @@ function subCard(sub, alerts) {
       <div class="sub-updated">${updated}</div>
     </div>
     ${pools}
+    ${subTotalRow(sub)}
     ${analysis}
   </div>`;
 }
@@ -199,11 +358,25 @@ function render(data) {
   const mode = data.clean_only ? "仅 clean 样本" : "全部样本";
   const last = data.last_sample_ts === null ? "—"
     : new Date(data.last_sample_ts * 1000).toLocaleString("zh-CN", {hour12: false});
-  let html = `样本数：${data.n_samples}（速率窗口 ${data.window_hours} 小时；估计用${mode}）`
-    + `　·　监测跨度：${fixed(data.span_hours, 1)} 小时　·　最后采样：${last}`;
+  const nSubs = (data.subscriptions || []).length;
+  const winTok = data.window_usage ? tok(data.window_usage.total) : null;
+  const stats = `<div class="stats">
+    <div class="stat"><div class="v">${winTok === null ? "—" : winTok}<span class="u">tok</span></div>
+      <div class="k">近 ${data.window_hours}h 消耗</div></div>
+    <div class="stat"><div class="v">${nSubs}</div>
+      <div class="k">监测订阅</div></div>
+    <div class="stat"><div class="v">${num(data.n_samples)}</div>
+      <div class="k">样本数</div></div>
+    <div class="stat"><div class="v">${fixed(data.span_hours, 1)}<span class="u">h</span></div>
+      <div class="k">监测跨度</div></div>
+  </div>`;
+  let html = stats
+    + `<div class="meta-line">速率窗口 ${data.window_hours} 小时；估计用${mode}`
+    + `　·　最后采样：${last}`;
   if (data.sample_interval_sec) html += `（间隔 ${data.sample_interval_sec}s）`;
+  html += `</div>`;
   if (data.stale)
-    html += `　<span class="warn-text">数据可能已过期：最新样本超过采样间隔 3 倍</span>`;
+    html += `<div class="warn-text">数据可能已过期：最新样本超过采样间隔 3 倍</div>`;
   if (data.external_tokens > 0)
     html += `<div class="warn-text">提示：clean=False 区间累计约 ${num(data.external_tokens)} tokens`
       + ` 可能混入未观测渠道（网页版、手机端等）；加 --clean-only 可将其排除出估计。</div>`;

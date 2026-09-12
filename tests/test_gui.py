@@ -109,12 +109,12 @@ class GuiServerTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def make_state(self, session=None, config=None, **kwargs):
+        watch = {"alerts_file": str(self.root / "alerts.json"),
+                 "offsets_file": str(self.offsets)}
         if config is not None:
-            config = {**config, "watch": {**(config.get("watch") or {}),
-                                          "alerts_file": str(self.root / "alerts.json")}}
+            config = {**config, "watch": {**(config.get("watch") or {}), **watch}}
         else:
-            config = {**CONFIG, "watch": {"interval_sec": 300,
-                                          "alerts_file": str(self.root / "alerts.json")}}
+            config = {**CONFIG, "watch": {"interval_sec": 300, **watch}}
         return GuiState(config=config, ledger_path=self.ledger,
                         window_hours=24.0, session=session, **kwargs)
 
@@ -171,6 +171,25 @@ class GuiServerTests(unittest.TestCase):
         self.assertEqual(pool["eta_hours"], 47.0)
         self.assertEqual(pool["n_pairs"], 3)
         self.assertEqual(pool["resets"], 0)
+
+    def test_api_status_usage_totals_fields(self):
+        # 订阅/全局 token 汇总字段：跨度累计 + 近窗口累计 + 拆分
+        samples = [mk(0, {"5h": 0}),
+                   mk(3600, {"5h": 1}, input=500),
+                   mk(7200, {"5h": 3}, input=400, output=600),
+                   mk(10800, {"5h": 6}, input=1000, cached=500)]
+        for item in samples:
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        sub = subs_by_name(data)["default"]
+        self.assertEqual(sub["usage_totals"],
+                         {"input": 1900, "cached": 500, "output": 600,
+                          "requests": 4, "total": 3000})
+        self.assertEqual(data["usage_totals"], sub["usage_totals"])
+        # 24h 窗口（86400s）覆盖全部样本；无样本订阅为 None 而非假 0
+        self.assertEqual(data["window_usage"]["total"], 3000)
+        self.assertIsNone(subs_by_name(data)["demo"]["usage_totals"])
 
     def test_api_status_empty_ledger_guidance_state(self):
         with ServerFixture(self.make_state()) as fix:
