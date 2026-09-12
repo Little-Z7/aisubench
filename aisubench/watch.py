@@ -95,7 +95,8 @@ class WatchSession:
 
     def __init__(self, agent: str, meter_name: str, log_path: str | Path, probe: Any,
                  ledger_path: str | Path, offsets_path: str | Path = OFFSETS_FILE,
-                 clean_window_sec: float = DEFAULT_CLEAN_WINDOW_SEC):
+                 clean_window_sec: float = DEFAULT_CLEAN_WINDOW_SEC,
+                 subscription: str | None = None):
         if meter_name not in METERS:
             raise ValueError(f"未知 meter: {meter_name}（可选 kimi / claude）")
         self.agent = agent
@@ -105,6 +106,8 @@ class WatchSession:
         self.ledger_path = Path(ledger_path)
         self.offsets_path = Path(offsets_path)
         self.clean_window_sec = float(clean_window_sec)
+        # 样本归属的订阅名：取 [agents.X].subscription，缺省为 agent 名本身。
+        self.subscription = str(subscription).strip() if subscription else agent
 
     def sample_once(self, now: float | None = None) -> dict:
         """采样一次并追加到账本，打印摘要；探针异常时上抛且不改任何持久化状态。"""
@@ -125,6 +128,7 @@ class WatchSession:
         sample = {
             "ts": ts,
             "agent": self.agent,
+            "subscription": self.subscription,
             "source": "watch",
             "usage": {
                 "input": max(0, int(usage.input)),
@@ -198,7 +202,8 @@ def run_watch(agent: str, probe: str, *, once: bool = False, interval: float | N
               "建议用 --once 手动节奏采样（配合 cron 等外部节奏）。", file=sys.stderr)
     session = WatchSession(agent=agent, meter_name=meter_name, log_path=log_path,
                            probe=probe_obj, ledger_path=ledger_path,
-                           offsets_path=offsets_path, clean_window_sec=clean_window)
+                           offsets_path=offsets_path, clean_window_sec=clean_window,
+                           subscription=agent_settings.get("subscription"))
     try:
         if once:
             session.sample_once()

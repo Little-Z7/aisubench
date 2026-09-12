@@ -22,6 +22,10 @@ CONFIG = {"subscriptions": {"demo": {"pools": ["5h"]}},
           "watch": {"interval_sec": 300}}
 
 
+def subs_by_name(data):
+    return {sub["name"]: sub for sub in data.get("subscriptions") or []}
+
+
 def mk(ts, pools, input=0, cached=0, output=0, clean=True):
     return {"ts": float(ts), "agent": "t", "source": "watch",
             "usage": {"input": input, "cached": cached, "output": output, "requests": 1},
@@ -85,8 +89,11 @@ class ServerFixture:
     def get(self, path):
         return urllib.request.urlopen(self.url(path), timeout=5)
 
-    def post(self, path):
-        request = urllib.request.Request(self.url(path), data=b"", method="POST")
+    def post(self, path, body=None):
+        data = b"" if body is None else json.dumps(body).encode("utf-8")
+        headers = {} if body is None else {"Content-Type": "application/json"}
+        request = urllib.request.Request(self.url(path), data=data,
+                                         headers=headers, method="POST")
         return urllib.request.urlopen(request, timeout=5)
 
 
@@ -101,8 +108,14 @@ class GuiServerTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def make_state(self, session=None, **kwargs):
-        return GuiState(config=CONFIG, ledger_path=self.ledger,
+    def make_state(self, session=None, config=None, **kwargs):
+        if config is not None:
+            config = {**config, "watch": {**(config.get("watch") or {}),
+                                          "alerts_file": str(self.root / "alerts.json")}}
+        else:
+            config = {**CONFIG, "watch": {"interval_sec": 300,
+                                          "alerts_file": str(self.root / "alerts.json")}}
+        return GuiState(config=config, ledger_path=self.ledger,
                         window_hours=24.0, session=session, **kwargs)
 
     def make_session(self, probe=None):
@@ -142,7 +155,12 @@ class GuiServerTests(unittest.TestCase):
         self.assertEqual(data["window_hours"], 24.0)
         self.assertEqual(data["last_sample_ts"], 10800.0)
         self.assertFalse(data["sampling_enabled"])
-        pool = data["pools"][0]
+        # 按订阅分组：mk() 样本无 subscription 字段 → 归 default；
+        # 配置声明的 demo 订阅无样本但仍在分组里
+        subs = subs_by_name(data)
+        self.assertEqual(set(subs), {"demo", "default"})
+        self.assertFalse(subs["demo"]["pools"][0]["has_samples"])
+        pool = subs["default"]["pools"][0]
         self.assertEqual(pool["name"], "5h")
         self.assertEqual(pool["current_pct"], 6.0)
         self.assertEqual(pool["used_tokens"], 3000.0)
@@ -160,9 +178,12 @@ class GuiServerTests(unittest.TestCase):
         self.assertEqual(data["n_samples"], 0)
         self.assertIsNone(data["last_sample_ts"])
         self.assertFalse(data["stale"])
+        self.assertEqual(data["alerts"], {})
         # 配置池仍在（has_samples=False），前端按空账本态渲染引导提示
-        self.assertEqual([p["name"] for p in data["pools"]], ["5h"])
-        self.assertFalse(data["pools"][0]["has_samples"])
+        sub = subs_by_name(data)["demo"]
+        self.assertEqual([p["name"] for p in sub["pools"]], ["5h"])
+        self.assertFalse(sub["pools"][0]["has_samples"])
+        self.assertEqual(sub["last_sample_rel"], "无样本")
 
     def test_post_sample_triggers_watch_session(self):
         self.log.write_text(kimi_line(), encoding="utf-8")
@@ -258,6 +279,74 @@ class GuiServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 fix.get("/nope")
             self.assertEqual(ctx.exception.code, 404)
+
+
+class AlertApiTests(unittest.TestCase):
+    """「额度恢复时提醒我」开关：POST /api/alerts 持久化到 alerts.json。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ledger = self.root / "ledger.jsonl"
+        self.alerts_file = self.root / "alerts.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def make_state(self, **kwargs):
+        config = {**CONFIG, "watch": {"interval_sec": 300,
+                                      "alerts_file": str(self.alerts_file)}}
+        return GuiState(config=config, ledger_path=self.ledger,
+                        window_hours=24.0, **kwargs)
+
+    def test_post_alerts_toggle_persists(self):
+        with ServerFixture(self.make_state()) as fix:
+            body = json.loads(
+                fix.post("/api/alerts",
+                         {"key": "demo.5h", "enabled": True}).read())
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["alerts"], {"demo.5h": True})
+            # 持久化到 alerts.json，且 /api/status 带出开关表
+            self.assertEqual(json.loads(self.alerts_file.read_text()),
+                             {"demo.5h": True})
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+            self.assertEqual(data["alerts"], {"demo.5h": True})
+            # 关闭即删键
+            body = json.loads(
+                fix.post("/api/alerts",
+                         {"key": "demo.5h", "enabled": False}).read())
+            self.assertEqual(body["alerts"], {})
+            self.assertEqual(json.loads(self.alerts_file.read_text()), {})
+
+    def test_post_alerts_bad_body_400(self):
+        with ServerFixture(self.make_state()) as fix:
+            for body in ({"enabled": True}, {"key": "demo.5h"},
+                         {"key": "", "enabled": True},
+                         {"key": "demo.5h", "enabled": "yes"}, None):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    fix.post("/api/alerts", body)
+                self.assertEqual(ctx.exception.code, 400, body)
+            self.assertFalse(self.alerts_file.exists())
+
+    def test_alerts_file_corrupt_degrades_to_empty(self):
+        self.alerts_file.write_text("{broken", encoding="utf-8")
+        with ServerFixture(self.make_state()) as fix:
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        self.assertEqual(data["alerts"], {})
+
+    def test_recovery_detection_flag_in_payload(self):
+        # 最新读数 55→12 回落（重置/恢复）：prev_pct > current_pct 供前端判定
+        for item in (mk(0, {"5h": 40}), mk(3600, {"5h": 55}, input=750),
+                     mk(7200, {"5h": 12}, input=100)):
+            append_sample(self.ledger, item)
+        with ServerFixture(self.make_state()) as fix:
+            fix.post("/api/alerts", {"key": "default.5h", "enabled": True})
+            data = json.loads(fix.get("/api/status").read().decode("utf-8"))
+        pool = subs_by_name(data)["default"]["pools"][0]
+        self.assertEqual(pool["prev_pct"], 55.0)
+        self.assertEqual(pool["current_pct"], 12.0)
+        self.assertTrue(pool["current_pct"] < pool["prev_pct"])
+        self.assertTrue(data["alerts"]["default.5h"])
 
 
 class RunGuiArgTests(unittest.TestCase):

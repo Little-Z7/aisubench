@@ -15,7 +15,7 @@ body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 16px; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 16px; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 h1 { font-size: 18px; margin: 0; font-weight: 600; }
 .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
@@ -34,22 +34,56 @@ a:hover { text-decoration: underline; }
 }
 #meta.stale { opacity: .55; }
 .warn-text { color: var(--warn); }
-#pools { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
-.card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-.pool-name { font-weight: 600; font-size: 15px; }
-.pct { font-size: 18px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
-.bar { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
-.bar-fill { height: 100%; background: var(--ok); transition: width .4s; }
-.bar-fill.mid { background: var(--warn); }
-.bar-fill.high { background: var(--bad); }
-dl { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin: 0; font-size: 12.5px; }
-dl > div { display: flex; justify-content: space-between; gap: 8px; }
-dl .wide { grid-column: 1 / -1; }
-dt { color: var(--dim); }
-dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+#subs { display: flex; flex-direction: column; gap: 14px; }
+
+/* 订阅卡片 */
+.sub-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px;
+}
+.sub-card.stale { opacity: .55; }
+.sub-head { display: flex; align-items: center; gap: 12px; }
+.brand {
+  width: 38px; height: 38px; border-radius: 9px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 700; color: #fff;
+}
+.sub-title-block { flex: 1; min-width: 0; }
+.sub-title { font-weight: 600; font-size: 15px; }
+.sub-title .acct { color: var(--dim); font-weight: 400; font-size: 13px; }
+.sub-src { color: var(--dim); font-size: 12px; margin-top: 1px; }
+.sub-updated { color: var(--dim); font-size: 12px; flex: none; }
+
+/* 池行：池名 + 进度条 + 百分比 + ETA + 铃铛 */
+.pool-rows { margin-top: 12px; display: flex; flex-direction: column; gap: 9px; }
+.pool-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.p-name { width: 52px; flex: none; color: var(--fg); font-variant-numeric: tabular-nums; }
+.p-bar { flex: 1; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+.p-fill { height: 100%; background: var(--ok); transition: width .4s; }
+.p-fill.mid { background: var(--warn); }
+.p-fill.high { background: var(--bad); }
+.p-fill.none { background: var(--border); }
+.p-pct { width: 44px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+.p-eta { width: 64px; flex: none; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+.bell {
+  flex: none; width: 26px; height: 26px; padding: 0; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--dim);
+}
+.bell svg { width: 14px; height: 14px; }
+.bell.on { color: var(--accent); border-color: var(--accent); }
+.recovered {
+  flex: none; font-size: 11px; color: var(--ok);
+  border: 1px solid var(--ok); border-radius: 10px; padding: 0 8px;
+}
+.analysis {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+  color: var(--warn); font-size: 12.5px;
+}
+.no-pools { margin-top: 12px; color: var(--dim); font-size: 12.5px; }
+
 .empty {
-  grid-column: 1 / -1; padding: 28px; text-align: center; color: var(--dim);
+  padding: 28px; text-align: center; color: var(--dim);
   background: var(--panel); border: 1px dashed var(--border); border-radius: 8px;
 }
 .empty code { color: var(--accent); background: #21262d; padding: 2px 6px; border-radius: 4px; }
@@ -70,7 +104,7 @@ dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
     <button id="sample-btn" disabled>立即采样</button>
   </header>
   <section id="meta">加载中…</section>
-  <main id="pools"></main>
+  <main id="subs"></main>
 </div>
 <div id="toast"></div>
 <script>
@@ -81,38 +115,75 @@ const esc = s => String(s).replace(/[&<>"]/g,
 const num = x => (x === null || x === undefined) ? null
   : Math.round(x).toLocaleString("en-US");
 const fixed = (x, d) => (x === null || x === undefined) ? null : Number(x).toFixed(d);
+const trimNum = x => Number(Number(x).toFixed(1));
 
-function quotaText(p) {
-  if (!p.has_samples) return "—";
-  if (!p.available) return "数据不足(Δ 未超粒度)";
-  const q = num(p.quota_tokens), low = num(p.q_low), high = num(p.q_high);
-  return high === null ? `${q} (≥${low})` : `${q} (${low}–${high})`;
+// 已弹过通知的恢复事件（key@lastSampleTs），同一恢复不重复弹
+const notified = new Set();
+
+const BELL_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+  stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3L2 11.5h12L12.5 9V6A4.5 4.5 0 0 0 8 1.5z"/>
+  <path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/></svg>`;
+
+function brandColor(label) {
+  let hash = 0;
+  for (const ch of String(label)) hash = (hash * 31 + ch.codePointAt(0)) % 360;
+  return `hsl(${hash}, 55%, 42%)`;
 }
-const rateText = p => !p.has_samples ? "—"
-  : (p.rate_tph === null ? "不可用" : `${num(p.rate_tph)} tok/h`);
-const etaText = p => !p.has_samples ? "—"
-  : (p.eta_hours === null ? "不可用" : `${fixed(p.eta_hours, 1)} h`);
 
-function poolCard(p, win) {
+function etaText(p) {
+  if (!p.has_samples) return "—";
+  const e = p.eta_hours;
+  if (e === null || e === undefined) return "不可用";
+  const totalMin = Math.round(e * 60);
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function poolRow(sub, p, alerts) {
   const pct = p.current_pct;
   const width = Math.max(0, Math.min(100, pct === null ? 0 : pct));
-  const cls = pct === null ? "" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
-  const used = p.used_tokens === null ? "—" : num(p.used_tokens);
-  const pairs = p.has_samples ? `对=${p.n_pairs} 重置=${p.resets}` : "账本中暂无该池样本";
-  const hint = p.has_samples && p.available && p.n_pairs > 0 && p.n_pairs < 3
-    ? `<div class="wide"><dt>备注</dt><dd class="warn-text">对数偏少，估计仅供参考</dd></div>` : "";
-  return `<div class="card">
-    <div class="card-head"><span class="pool-name">${esc(p.name)}</span>
-      <span class="pct">${pct === null ? "—" : pct + "%"}</span></div>
-    <div class="bar"><div class="bar-fill ${cls}" style="width:${width}%"></div></div>
-    <dl>
-      <div><dt>已用≈tokens</dt><dd>${used}</dd></div>
-      <div><dt>速率(近${win}h)</dt><dd>${rateText(p)}</dd></div>
-      <div class="wide"><dt>100% 当量 Q</dt><dd>${quotaText(p)}</dd></div>
-      <div><dt>预计耗尽</dt><dd>${etaText(p)}</dd></div>
-      <div><dt>有效对/重置</dt><dd>${pairs}</dd></div>
-      ${hint}
-    </dl>
+  const cls = pct === null ? "none" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
+  const key = `${sub.name}.${p.name}`;
+  const alertOn = !!alerts[key];
+  const recovered = p.prev_pct !== null && p.prev_pct !== undefined
+    && pct !== null && pct < p.prev_pct;
+  const badge = recovered && alertOn ? `<span class="recovered">已恢复</span>` : "";
+  return `<div class="pool-row">
+    <span class="p-name">${esc(p.name)}</span>
+    <div class="p-bar"><div class="p-fill ${cls}" style="width:${width}%"></div></div>
+    <span class="p-pct">${pct === null ? "—" : trimNum(pct) + "%"}</span>
+    <span class="p-eta" title="预计耗尽剩余时间">${etaText(p)}</span>
+    <button class="bell ${alertOn ? "on" : ""}" data-key="${esc(key)}"
+      title="额度恢复时提醒我">${BELL_SVG}</button>
+    ${badge}
+  </div>`;
+}
+
+function subCard(sub, alerts) {
+  const title = sub.label || sub.name;
+  const acct = sub.account ? ` <span class="acct">(${esc(sub.account)})</span>` : "";
+  const updated = sub.stale ? `${esc(sub.last_sample_rel)} · 已过期`
+    : esc(sub.last_sample_rel);
+  const pools = (sub.pools || []).length
+    ? `<div class="pool-rows">${sub.pools.map(p => poolRow(sub, p, alerts)).join("")}</div>`
+    : `<div class="no-pools">该订阅暂无额度池样本。</div>`;
+  const analysis = sub.analysis ? `<div class="analysis">${esc(sub.analysis)}</div>` : "";
+  return `<div class="sub-card ${sub.stale ? "stale" : ""}">
+    <div class="sub-head">
+      <div class="brand" style="background:${brandColor(title)}">${esc(String(title)[0] || "?")}</div>
+      <div class="sub-title-block">
+        <div class="sub-title">${esc(title)}${acct}</div>
+        <div class="sub-src">${esc(sub.agent)} · ${esc(sub.host)}</div>
+      </div>
+      <div class="sub-updated">${updated}</div>
+    </div>
+    ${pools}
+    ${analysis}
   </div>`;
 }
 
@@ -138,15 +209,47 @@ function render(data) {
       + ` 可能混入未观测渠道（网页版、手机端等）；加 --clean-only 可将其排除出估计。</div>`;
   meta.innerHTML = html;
 
-  const pools = $("#pools");
-  if (data.n_samples === 0) {
-    pools.innerHTML = `<div class="empty">账本还没有样本——这是正常的初始状态。<br>
+  const subs = $("#subs");
+  const alerts = data.alerts || {};
+  if (data.n_samples === 0 && !(data.subscriptions || []).length) {
+    subs.innerHTML = `<div class="empty">账本还没有样本——这是正常的初始状态。<br>
       先跑一次采样：<code>python3 -m aisubench watch --agent &lt;name&gt; --probe mock --once</code></div>`;
     return;
   }
-  pools.innerHTML = data.pools.length
-    ? data.pools.map(p => poolCard(p, data.window_hours)).join("")
-    : `<div class="empty">样本里没有任何额度池，且配置 [subscriptions.*].pools 未声明池。</div>`;
+  subs.innerHTML = (data.subscriptions || []).length
+    ? data.subscriptions.map(s => subCard(s, alerts)).join("")
+    : `<div class="empty">样本里没有任何订阅分组，且配置 [subscriptions.*] 未声明订阅。</div>`;
+  maybeNotify(data, alerts);
+}
+
+function maybeNotify(data, alerts) {
+  for (const sub of data.subscriptions || []) {
+    for (const p of sub.pools || []) {
+      const key = `${sub.name}.${p.name}`;
+      const recovered = p.prev_pct !== null && p.prev_pct !== undefined
+        && p.current_pct !== null && p.current_pct < p.prev_pct;
+      if (!recovered || !alerts[key]) continue;
+      const eventKey = `${key}@${sub.last_sample_ts}`;
+      if (notified.has(eventKey)) continue;
+      notified.add(eventKey);
+      notifyRecovered(sub, p);
+    }
+  }
+}
+
+function notifyRecovered(sub, p) {
+  const text = `${sub.label || sub.name} · ${p.name} 额度已恢复（当前已用 ${trimNum(p.current_pct)}%）`;
+  try {
+    if (!("Notification" in window)) return;  // 静默降级为徽标
+    if (Notification.permission === "granted") {
+      new Notification("AISUBench 额度恢复", {body: text});
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then(perm => {
+        if (perm === "granted")
+          new Notification("AISUBench 额度恢复", {body: text});
+      });
+    }
+  } catch (e) { /* 授权失败/不支持时静默降级为徽标 */ }
 }
 
 function toast(msg) {
@@ -175,6 +278,35 @@ $("#sample-btn").addEventListener("click", async () => {
     toast("采样请求失败：" + e);
   } finally {
     refresh();
+  }
+});
+
+$("#subs").addEventListener("click", async ev => {
+  const bell = ev.target.closest(".bell");
+  if (!bell) return;
+  const key = bell.dataset.key;
+  const enabled = !bell.classList.contains("on");
+  bell.disabled = true;
+  try {
+    const res = await fetch("/api/alerts", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({key, enabled}),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) {
+      toast(`提醒开关失败：${body.error || res.status}`);
+      return;
+    }
+    bell.classList.toggle("on", enabled);
+    if (enabled && "Notification" in window
+        && Notification.permission === "default")
+      Notification.requestPermission().catch(() => {});
+    toast(enabled ? `已开启恢复提醒：${key}` : `已关闭恢复提醒：${key}`);
+  } catch (e) {
+    toast("提醒开关请求失败：" + e);
+  } finally {
+    bell.disabled = false;
   }
 });
 

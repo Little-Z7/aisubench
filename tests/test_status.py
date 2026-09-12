@@ -12,18 +12,35 @@ from contextlib import redirect_stderr, redirect_stdout
 from aisubench import status as status_module
 from aisubench.cli import main
 from aisubench.ledger import append_sample
-from aisubench.status import run_status
+from aisubench.status import (collect_status, collect_subscriptions,
+                              mask_account, pace_note, pool_window_hours,
+                              relative_time, run_status)
 
 CONFIG = {"subscriptions": {"demo": {"pools": ["5h"]}},
           "calibration": {"granularity_pct": 1.0}}
 CONFIG_MULTI = {"subscriptions": {"demo": {"pools": ["5h", "week", "month"]}},
                 "calibration": {"granularity_pct": 1.0}}
+CONFIG_TWO_SUBS = {
+    "subscriptions": {
+        "mock1": {"label": "Max 20x", "account": "t***@g***.com",
+                  "agent": "claude", "host": "workstation",
+                  "pools": ["5h", "week"]},
+        "mock2": {"label": "Pro", "agent": "kimi",
+                  "pools": ["5h", "week"]},
+    },
+    "calibration": {"granularity_pct": 1.0},
+}
 
 
-def mk(ts, pools, input=0, cached=0, output=0, clean=True):
-    return {"ts": float(ts), "agent": "t", "source": "watch",
-            "usage": {"input": input, "cached": cached, "output": output, "requests": 1},
-            "pools": pools, "clean": clean}
+def mk(ts, pools, input=0, cached=0, output=0, clean=True, subscription="demo",
+       agent="t"):
+    sample = {"ts": float(ts), "agent": agent, "source": "watch",
+              "usage": {"input": input, "cached": cached, "output": output,
+                        "requests": 1},
+              "pools": pools, "clean": clean}
+    if subscription is not None:
+        sample["subscription"] = subscription
+    return sample
 
 
 def single_pool_samples():
@@ -60,9 +77,7 @@ class StatusTests(unittest.TestCase):
 
     def rows(self, text):
         return {line.split()[0]: line for line in text.splitlines()
-                if line and not line.startswith(("#", "账本", "-", " ", "先跑"))
-                and "|" not in line and "---" not in line
-                and line.split()[0] in ("5h", "week", "month")}
+                if line and line.split()[0] in ("5h", "week", "month")}
 
     def test_missing_ledger_prints_watch_hint(self):
         text = self.status_text(self.root / "nowhere.jsonl")
@@ -84,6 +99,7 @@ class StatusTests(unittest.TestCase):
         self.assertIn("样本数：4（速率窗口 24 小时；估计用全部样本）", text)
         self.assertIn("监测跨度：3.0 小时", text)
         self.assertNotIn("未观测渠道", text)  # 全部 clean 时不外溢提示
+        self.assertIn("## demo", text)      # 按订阅分组的分节标题
         row = self.rows(text)["5h"]
         self.assertIn("6%", row)
         self.assertIn("3,000", row)                       # 已用≈tokens
@@ -143,6 +159,189 @@ class StatusTests(unittest.TestCase):
         row = self.rows(self.status_text(path))["5h"]
         self.assertIn("对=2", row)
         self.assertIn("仅供参考", row)
+
+
+class SubscriptionGroupTests(unittest.TestCase):
+    """collect_subscriptions：样本按 subscription 分组、显示字段兜底、节奏分析。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def collect(self, samples, config=CONFIG_TWO_SUBS, **kwargs):
+        ledger = self.root / "ledger.jsonl"
+        for item in samples:
+            append_sample(ledger, item)
+        return collect_subscriptions(config, ledger, **kwargs)
+
+    def subs_by_name(self, data):
+        return {sub["name"]: sub for sub in data["subscriptions"]}
+
+    def test_samples_grouped_by_subscription(self):
+        samples = [mk(0, {"5h": 10}, subscription="mock1"),
+                   mk(3600, {"5h": 20}, input=500, subscription="mock1"),
+                   mk(0, {"5h": 40}, subscription="mock2"),
+                   mk(3600, {"5h": 60}, input=200, subscription="mock2")]
+        subs = self.subs_by_name(self.collect(samples))
+        self.assertEqual(set(subs), {"mock1", "mock2"})
+        self.assertEqual(subs["mock1"]["n_samples"], 2)
+        self.assertEqual(subs["mock1"]["last_sample_ts"], 3600.0)
+        pool = {p["name"]: p for p in subs["mock2"]["pools"]}["5h"]
+        self.assertEqual(pool["current_pct"], 60.0)
+        # 各订阅估计互不影响：mock2 的 ΣΔ=20、Σtokens=200 → R=10
+        self.assertEqual(pool["quota_tokens"], 1000.0)
+        # 显示字段：声明的 label/account/agent/host + 未声明 host 兜底 localhost
+        self.assertEqual(subs["mock1"]["label"], "Max 20x")
+        self.assertEqual(subs["mock1"]["account"], "t***@g***.com")
+        self.assertEqual(subs["mock1"]["agent"], "claude")
+        self.assertEqual(subs["mock1"]["host"], "workstation")
+        self.assertEqual(subs["mock2"]["label"], "Pro")
+        self.assertIsNone(subs["mock2"]["account"])
+        self.assertEqual(subs["mock2"]["host"], "localhost")
+
+    def test_legacy_samples_fall_into_default_group(self):
+        samples = [mk(0, {"5h": 10}, subscription=None),
+                   mk(3600, {"5h": 20}, input=500, subscription=None)]
+        data = self.collect(samples)
+        subs = self.subs_by_name(data)
+        self.assertIn("default", subs)
+        self.assertEqual(subs["default"]["n_samples"], 2)
+        self.assertEqual(subs["default"]["label"], "default")
+        # 未声明订阅的 agent 兜底取最新样本的 agent
+        self.assertEqual(subs["default"]["agent"], "t")
+        self.assertEqual(subs["default"]["host"], "localhost")
+        # 声明了但无样本的订阅仍然出现（配置池行保持可见）
+        self.assertIn("mock1", subs)
+        self.assertFalse(subs["mock1"]["pools"][0]["has_samples"])
+        # 配置声明的订阅排在发现的分组之前
+        self.assertEqual([s["name"] for s in data["subscriptions"]][:2],
+                         ["mock1", "mock2"])
+
+    def test_analysis_pace_notes(self):
+        # mock1：5h 池 eta≈0.07 < 5×0.5 → 偏快；week 池 eta≈642 > 168×2 → 偏慢。
+        # R 由全部有效对累计（Σtokens/ΣΔ≈1964），速率只计 24h 窗口（150 tok/h）。
+        samples = [mk(0, {"5h": 0, "week": 0}, subscription="mock1"),
+                   mk(3600, {"5h": 99.9, "week": 50}, input=100000,
+                            subscription="mock1"),
+                   mk(356400, {"5h": 99.95, "week": 50.5}, input=50,
+                              subscription="mock1"),
+                   mk(360000, {"5h": 99.99, "week": 51}, input=100,
+                              subscription="mock1")]
+        data = self.collect(samples)
+        sub = self.subs_by_name(data)["mock1"]
+        self.assertIn("5h 用量进度偏快", sub["analysis"])
+        self.assertIn("week 用量进度偏慢", sub["analysis"])
+        self.assertIn(" · ", sub["analysis"])
+        self.assertIn("分析：", run_status_rendered(data))
+
+    def test_no_analysis_when_pace_normal(self):
+        # 5h 池：R=50、rate=100 → eta=9.0，落在 [2.5, 10] 区间内 → 无分析行
+        samples = [mk(0, {"5h": 80}, subscription="mock1"),
+                   mk(3600, {"5h": 82}, input=100, subscription="mock1")]
+        sub = self.subs_by_name(self.collect(samples))["mock1"]
+        self.assertEqual(sub["analysis"], "")
+
+    def test_stale_flag(self):
+        samples = [mk(1000, {"5h": 10}, subscription="mock1"),
+                   mk(1600, {"5h": 20}, input=100, subscription="mock1")]
+        data = self.collect(samples, now=1600 + 4 * 300,
+                            stale_interval_sec=300)
+        self.assertTrue(self.subs_by_name(data)["mock1"]["stale"])
+        data = self.collect(samples, now=1600 + 2 * 300,
+                            stale_interval_sec=300)
+        self.assertFalse(self.subs_by_name(data)["mock1"]["stale"])
+
+
+def run_status_rendered(data):
+    return status_module.render_status(data)
+
+
+class HelperFunctionTests(unittest.TestCase):
+    """节奏判断边界、池窗口解析、相对时间格式化、账号掩码。"""
+
+    def pool(self, name, eta):
+        return {"name": name, "has_samples": True, "eta_hours": eta}
+
+    def test_pool_window_hours(self):
+        self.assertEqual(pool_window_hours("5h"), 5.0)
+        self.assertEqual(pool_window_hours("7d"), 168.0)
+        self.assertEqual(pool_window_hours("week"), 168.0)
+        self.assertEqual(pool_window_hours("month"), 720.0)
+        self.assertEqual(pool_window_hours("unknown"), 24.0)
+        self.assertEqual(pool_window_hours(""), 24.0)
+
+    def test_pace_boundaries(self):
+        # 5h 池窗口一半 = 2.5、两倍 = 10：边界值本身不算偏快/偏慢
+        self.assertIsNone(pace_note(self.pool("5h", 2.5)))
+        self.assertIsNone(pace_note(self.pool("5h", 10.0)))
+        self.assertEqual(pace_note(self.pool("5h", 2.4)), "5h 用量进度偏快")
+        self.assertEqual(pace_note(self.pool("5h", 10.1)), "5h 用量进度偏慢")
+        self.assertIsNone(pace_note(self.pool("5h", 5.0)))
+        # 无 ETA / 无样本 → 不判断
+        self.assertIsNone(pace_note(self.pool("5h", None)))
+        self.assertIsNone(pace_note({"name": "5h", "has_samples": False,
+                                     "eta_hours": 1.0}))
+
+    def test_relative_time(self):
+        now = 100000.0
+        self.assertEqual(relative_time(None, now), "无样本")
+        self.assertEqual(relative_time(now - 30, now), "刚刚")
+        self.assertEqual(relative_time(now - 120, now), "2 分钟前")
+        self.assertEqual(relative_time(now - 59 * 60, now), "59 分钟前")
+        self.assertEqual(relative_time(now - 12 * 3600, now), "12 小时前")
+        self.assertEqual(relative_time(now - 26 * 3600, now), "1 天前")
+        self.assertEqual(relative_time(now + 60, now), "刚刚")  # 未来时间钳到 0
+
+    def test_mask_account(self):
+        self.assertEqual(mask_account("test@gmail.com"), "t***@g***.com")
+        self.assertEqual(mask_account("t***@g***.com"), "t***@g***.com")  # 幂等
+        self.assertEqual(mask_account("ab"), "a***")
+        self.assertIsNone(mask_account(None))
+        self.assertIsNone(mask_account(""))
+
+    def test_collect_status_keeps_flat_pools(self):
+        # shells/viewmodel 兼容契约：collect_status 仍输出扁平 pools + prev_pct
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "ledger.jsonl"
+            for item in single_pool_samples():
+                append_sample(ledger, item)
+            data = collect_status(CONFIG, ledger)
+        self.assertIn("pools", data)
+        self.assertNotIn("subscriptions", data)
+        pool = data["pools"][0]
+        self.assertEqual(pool["name"], "5h")
+        self.assertEqual(pool["current_pct"], 6.0)
+        self.assertEqual(pool["prev_pct"], 3.0)  # 上一次读数（用于恢复检测）
+
+
+class ResetDetectionTests(unittest.TestCase):
+    """额度恢复检测：最新读数低于上一样本读数 → prev_pct > current_pct。"""
+
+    def test_prev_pct_marks_pool_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "ledger.jsonl"
+            samples = [mk(0, {"5h": 40}),
+                       mk(3600, {"5h": 55}, input=750),
+                       mk(7200, {"5h": 12}, input=100)]  # 55→12 回落 = 重置/恢复
+            for item in samples:
+                append_sample(ledger, item)
+            data = collect_subscriptions(CONFIG, ledger)
+        pool = {p["name"]: p for p in data["subscriptions"][0]["pools"]}["5h"]
+        self.assertEqual(pool["current_pct"], 12.0)
+        self.assertEqual(pool["prev_pct"], 55.0)
+        self.assertGreater(pool["resets"], 0)
+
+    def test_no_recovery_when_pct_rises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "ledger.jsonl"
+            for item in single_pool_samples():
+                append_sample(ledger, item)
+            data = collect_subscriptions(CONFIG, ledger)
+        pool = {p["name"]: p for p in data["subscriptions"][0]["pools"]}["5h"]
+        self.assertFalse(pool["current_pct"] < pool["prev_pct"])  # 6 > 3，非恢复
 
 
 class StatusCliTests(unittest.TestCase):

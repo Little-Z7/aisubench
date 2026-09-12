@@ -28,7 +28,8 @@ def build_session(agent: str, probe: str, config: dict,
         probe=PROBES[probe](), ledger_path=ledger_path,
         offsets_path=_resolve_path(watch_cfg.get("offsets_file"), OFFSETS_FILE),
         clean_window_sec=float(watch_cfg.get("clean_window_sec",
-                                             DEFAULT_CLEAN_WINDOW_SEC)))
+                                             DEFAULT_CLEAN_WINDOW_SEC)),
+        subscription=agent_settings.get("subscription"))
 
 
 class Sampler:

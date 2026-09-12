@@ -62,7 +62,11 @@ python3 -m aisubench gui --port 7788
 - `--sample-interval SEC`：GUI 进程内后台每 SEC 秒采样一次（需同时给 `--agent/--probe`），单进程 = 采样 + 展示；不传则只读账本。
 - `--debug`：开启调试模式，`/debug` 页面可访问（默认关闭时返回 404）：状态栏预览（用 `shells/shared/viewmodel.py` 渲染，所见即 Mac 状态栏将显示的内容）、原始 `collect_status` JSON、账本末尾样本与 meter offsets 原文。
 
-页面数字与 `status` 完全同源（共用 `collect_status`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
+页面数字与 `status` 完全同源（`collect_status` / `collect_subscriptions`），措辞一致（不可用 / 数据不足(Δ 未超粒度)）；最新样本超过采样间隔 3 倍时头部置灰提示数据过期。
+
+主面板为**订阅监控卡片**：每张卡 = 一个订阅（`aisubench.toml` 的 `[subscriptions.*]` 声明显示名、掩码账号、绑定的 agent/probe 与池结构），卡内每池一行彩色进度条（<70% 绿 / <90% 黄 / ≥90% 红）、百分比与预计耗尽时间（ETA，格式 `3d 21h`），头部为相对更新时间（"2 分钟前"）。分析行自动判断节奏：`eta < 窗口×0.5` 显示"用量进度偏快"，`> 窗口×2` 显示"偏慢"。每池支持「额度恢复时提醒我」（存 `state/alerts.json`，检测到池百分比回落即标记"已恢复"并弹浏览器通知）。
+
+样本按订阅分组：watch 采样时从 `[agents.*].subscription` 取订阅名（缺省为 agent 名），旧样本归 `default`。
 
 ## 原生壳（macOS 状态栏）
 

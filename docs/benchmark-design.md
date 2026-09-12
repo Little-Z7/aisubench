@@ -42,6 +42,7 @@ ledger.jsonl（账本，state/ 内，git 忽略）
         │ estimate（比率估计 / 速率 / ETA）      estimate_pools · burn_rate · eta_hours
         ▼
 status.collect_status（结构化 dict）──► status（中文监控表）/ gui（本地 Web 面板）
+status.collect_subscriptions（按订阅分组）──► gui 订阅卡片 / status 分组渲染
 ```
 
 - **账本契约**（`aisubench/ledger.py`，每行一个 JSON 样本）：`{"ts", "agent", "source", "usage": {input, cached, output, requests}, "pools": {池名: 已用%}, "clean"}`。`usage` 是自该 agent 上一个样本以来的 token 增量，`pools` 是采样时刻各额度窗口的已用百分比读数。

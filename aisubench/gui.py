@@ -7,16 +7,21 @@
 路由：
 - ``GET /``            单页监控面板（``aisubench/dashboard.html``，vanilla JS
                        每 5 秒拉一次 ``/api/status``，无任何外部 CDN 资源）；
-- ``GET /api/status``  ``status.collect_status`` 的结构化 JSON，与 CLI
-                       ``status`` 同口径同数字；
+- ``GET /api/status``  ``status.collect_subscriptions`` 的按订阅分组 JSON
+                       （附带 alerts 开关表等面板辅助字段），与 CLI ``status``
+                       同口径同数字；
 - ``POST /api/sample`` 立即采样一次（复用 watch 的 ``WatchSession.sample_once``，
                        启动时需传 ``--agent/--probe``，否则返回 403 且按钮置灰；
                        与后台采样线程共用一把锁防并发重入，重入返回 409）；
+- ``POST /api/alerts`` 设置「额度恢复时提醒我」开关，body 为
+                       ``{"key": "<订阅>.<池>", "enabled": true|false}``，
+                       持久化到 ``state/alerts.json``（``[watch].alerts_file``
+                       可覆盖路径）；
 - ``GET /debug``       仅 ``--debug`` 时开放（否则 404）：服务端渲染的调试页，
                        含状态栏预览（复用 ``shells/shared/viewmodel`` 的
                        title_text/pool_rows/header_rows，浏览器所见即菜单栏
-                       菜单内容）、``collect_status`` 完整 JSON、账本末尾
-                       10 条样本原文与 meter_offsets.json 内容。
+                       菜单内容）、``collect_subscriptions`` 完整分组 JSON、
+                       账本末尾 10 条样本原文与 meter_offsets.json 内容。
 
 ``--sample-interval N`` 时 GUI 进程内起守护线程每 N 秒采样一次，单进程 =
 采样 + 展示；不传则只读账本。服务只绑定 127.0.0.1，不暴露到局域网。
@@ -34,9 +39,11 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .alerts import ALERTS_FILE, load_alerts, set_alert
 from .config import load_config
 from .ledger import DEFAULT_LEDGER
-from .status import DEFAULT_WINDOW_HOURS, collect_status
+from .status import (DEFAULT_WINDOW_HOURS, collect_status,
+                     collect_subscriptions)
 from .watch import (DEFAULT_CLEAN_WINDOW_SEC, DEFAULT_INTERVAL_SEC, OFFSETS_FILE,
                     PROBES, WatchSession, _resolve_meter, _resolve_path)
 
@@ -61,21 +68,30 @@ class GuiState:
         # 数据新鲜度判定的参考间隔：--sample-interval 或 [watch].interval_sec。
         self.sample_interval_sec = sample_interval_sec
         self.sample_lock = threading.Lock()
+        # 「额度恢复时提醒我」开关的持久化文件（[watch].alerts_file 可覆盖）。
+        self.alerts_path = _resolve_path(
+            (config.get("watch") or {}).get("alerts_file"), ALERTS_FILE)
 
     def status_payload(self) -> dict:
-        """collect_status 结果 + 面板辅助字段（服务时间/采样开关/新鲜度）。"""
-        status = collect_status(self.config, ledger=self.ledger_path,
-                                window_hours=self.window_hours,
-                                clean_only=self.clean_only)
+        """collect_subscriptions 分组结果 + 面板辅助字段（服务时间/采样开关/提醒开关）。"""
+        status = collect_subscriptions(
+            self.config, ledger=self.ledger_path, window_hours=self.window_hours,
+            clean_only=self.clean_only,
+            stale_interval_sec=self.sample_interval_sec)
         status["server_time"] = time.time()
         status["sampling_enabled"] = self.session is not None
         status["sample_interval_sec"] = self.sample_interval_sec
         status["debug_enabled"] = self.debug
+        status["alerts"] = load_alerts(self.alerts_path)
         last = status.get("last_sample_ts")
         status["stale"] = bool(
             last is not None and self.sample_interval_sec
             and status["server_time"] - last > 3 * self.sample_interval_sec)
         return status
+
+    def set_alert(self, key: str, enabled: bool) -> dict:
+        """持久化一个「额度恢复时提醒我」开关；返回最新开关表。"""
+        return set_alert(self.alerts_path, key, enabled)
 
     def try_sample(self) -> tuple[int, dict]:
         """立即采样一次。返回 (HTTP 状态码, 响应体)；带锁防并发重入。"""
@@ -123,11 +139,36 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
-        if path != "/api/sample":
-            self._send_json(404, {"ok": False, "error": "未知路径"})
+        if path == "/api/sample":
+            code, body = self.server.state.try_sample()
+            self._send_json(code, body)
             return
-        code, body = self.server.state.try_sample()
-        self._send_json(code, body)
+        if path == "/api/alerts":
+            body = self._read_json()
+            key = str((body or {}).get("key") or "").strip()
+            enabled = (body or {}).get("enabled")
+            if not key or not isinstance(enabled, bool):
+                self._send_json(400, {"ok": False,
+                                      "error": "需要 {\"key\": \"<订阅>.<池>\", \"enabled\": bool}"})
+                return
+            alerts = self.server.state.set_alert(key, enabled)
+            self._send_json(200, {"ok": True, "alerts": alerts})
+            return
+        self._send_json(404, {"ok": False, "error": "未知路径"})
+
+    def _read_json(self) -> dict | None:
+        """读取 POST JSON body；缺失或非法 JSON 返回 None。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return None
+        if length <= 0:
+            return None
+        try:
+            parsed = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _send(self, code: int, content_type: str, body: bytes) -> None:
         self.send_response(code)
@@ -176,7 +217,9 @@ def _debug_page(state: GuiState) -> bytes:
     stamp = datetime.fromtimestamp(status["server_time"]).strftime(
         "%Y-%m-%d %H:%M:%S")
     try:
-        preview = _menubar_preview(status)
+        preview = _menubar_preview(collect_status(
+            state.config, ledger=state.ledger_path,
+            window_hours=state.window_hours, clean_only=state.clean_only))
     except Exception as exc:
         preview = f'<div class="mb-line warn">状态栏预览不可用：{_esc(exc)}</div>'
 
@@ -263,7 +306,7 @@ pre .dim {{ color: var(--dim); }}
     </div>
   </section>
   <section class="card">
-    <h2>原始数据 · collect_status JSON</h2>
+    <h2>原始数据 · collect_subscriptions 分组 JSON</h2>
     <pre>{status_json}</pre>
   </section>
   <section class="card">
@@ -294,7 +337,8 @@ def _make_session(agent: str, probe: str, config: dict,
         probe=PROBES[probe](), ledger_path=ledger_path,
         offsets_path=_resolve_path(watch_cfg.get("offsets_file"), OFFSETS_FILE),
         clean_window_sec=float(watch_cfg.get("clean_window_sec",
-                                             DEFAULT_CLEAN_WINDOW_SEC)))
+                                             DEFAULT_CLEAN_WINDOW_SEC)),
+        subscription=agent_settings.get("subscription"))
 
 
 def _sampler_loop(state: GuiState, interval: float, stop: threading.Event) -> None:

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -29,12 +31,23 @@ LOW_PAIRS_HINT_MAX = 3
 _UNAVAILABLE = "不可用"
 _INSUFFICIENT = "数据不足(Δ 未超粒度)"
 
+# 旧账本样本没有 subscription 字段时归入的分组名。
+DEFAULT_SUBSCRIPTION = "default"
+# 数据新鲜度判定的兜底参考间隔（[watch].interval_sec 缺省值，与 watch 一致）。
+DEFAULT_INTERVAL_SEC = 300.0
+# 池名解析不出窗口小时数时的兜底值。
+DEFAULT_POOL_WINDOW_HOURS = 24.0
+
+_HOURS_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*h$")
+_DAYS_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*d$")
+_NAMED_WINDOWS = {"week": 168.0, "w": 168.0, "month": 720.0, "mo": 720.0}
+
 
 def run_status(ledger: str | Path | None = None, window_hours: float | None = None,
                clean_only: bool = False, config: dict | None = None) -> int:
     """status 子命令主体。``config`` 可注入，便于测试；返回退出码（恒 0）。"""
     config = load_config() if config is None else config
-    print(render_status(collect_status(config, ledger, window_hours, clean_only)))
+    print(render_status(collect_subscriptions(config, ledger, window_hours, clean_only)))
     return 0
 
 
@@ -44,24 +57,12 @@ def collect_status(config: dict, ledger: str | Path | None = None,
 
     返回 {ledger_path, ledger_exists, window_hours, clean_only, n_samples,
     span_hours, external_tokens, last_sample_ts, pools}；``pools`` 每项为
-    {name, has_samples, current_pct, used_tokens, tokens_per_pct, available,
-    quota_tokens, q_low, q_high, n_pairs, resets, rate_tph, eta_hours}，
-    数值缺失一律为 None（不可用），不输出伪 0 值。
+    {name, has_samples, current_pct, prev_pct, used_tokens, tokens_per_pct,
+    available, quota_tokens, q_low, q_high, n_pairs, resets, rate_tph,
+    eta_hours}，数值缺失一律为 None（不可用），不输出伪 0 值。
     """
-    watch_cfg = config.get("watch") or {}
-    ledger_path = _resolve_path(ledger or watch_cfg.get("ledger"), DEFAULT_LEDGER)
-    window = DEFAULT_WINDOW_HOURS if window_hours is None else float(window_hours)
-    if window <= 0:
-        raise ValueError("--window-hours 必须为正数")
-    samples = load_samples(ledger_path)
-    estimates = estimate_pools(samples, granularity_pct=_granularity(config),
-                               clean_only=clean_only)
-    meta = estimates.get("_meta") or {}
-    latest = _latest_pools(samples)
-    seen = sorted(name for name in estimates if name != "_meta")
-    ordered = list(dict.fromkeys(list(_configured_pools(config)) + seen))
-    rate_samples = ([s for s in samples if _is_clean(s)] if clean_only
-                    else samples) if samples else []
+    ledger_path, window, samples = _resolve_inputs(config, ledger, window_hours)
+    pools, meta = _collect_pools(config, samples, None, window, clean_only)
     stamps = [stamp for stamp in (_num(s.get("ts")) for s in samples)
               if stamp is not None]
     return {
@@ -73,14 +74,117 @@ def collect_status(config: dict, ledger: str | Path | None = None,
         "span_hours": float(meta.get("span_hours", 0.0)),
         "external_tokens": int(meta.get("external_tokens", 0) or 0),
         "last_sample_ts": max(stamps) if stamps else None,
-        "pools": [_collect_pool(name, estimates.get(name), latest.get(name),
-                                rate_samples, window) for name in ordered],
+        "pools": pools,
     }
 
 
+def collect_subscriptions(config: dict, ledger: str | Path | None = None,
+                          window_hours: float | None = None,
+                          clean_only: bool = False, now: float | None = None,
+                          stale_interval_sec: float | None = None) -> dict:
+    """按订阅分组的状态结果：与 ``collect_status`` 同口径，只是池按订阅拆分。
+
+    样本的 ``subscription`` 字段决定归属；旧样本无该字段时归 ``default``。
+    订阅的显示字段（label/account/agent/host）取 ``[subscriptions.<name>]``，
+    未声明的订阅按账本样本兜底（agent 取最新样本的 agent、host 取 localhost）。
+
+    返回与 ``collect_status`` 相同的全局元数据键，但 ``pools`` 换成
+    ``subscriptions``：每项 {name, label, account, agent, host,
+    last_sample_ts, last_sample_rel, stale, n_samples, external_tokens,
+    analysis, pools}；``pools`` 与 ``collect_status`` 的池 dict 同结构。
+    ``stale`` 判定同 GUI 口径：最新样本距今超过参考间隔 3 倍（参考间隔取
+    ``stale_interval_sec`` 或 ``[watch].interval_sec``，默认 300s）。
+    """
+    ledger_path, window, samples = _resolve_inputs(config, ledger, window_hours)
+    watch_cfg = config.get("watch") or {}
+    interval = _num(stale_interval_sec) \
+        or _num(watch_cfg.get("interval_sec")) or DEFAULT_INTERVAL_SEC
+    current_ts = time.time() if now is None else float(now)
+
+    groups: dict[str, list[dict]] = {}
+    for sample in samples:
+        groups.setdefault(_subscription_of(sample), []).append(sample)
+
+    subs_cfg = config.get("subscriptions") or {}
+    names = [name for name, sub in subs_cfg.items() if isinstance(sub, dict)]
+    names += sorted(name for name in groups if name not in subs_cfg)
+
+    subscriptions: list[dict] = []
+    for name in names:
+        sub_samples = groups.get(name, [])
+        sub_cfg = subs_cfg.get(name) or {}
+        pools, meta = _collect_pools(config, sub_samples, name, window, clean_only)
+        stamps = [stamp for stamp in (_num(s.get("ts")) for s in sub_samples)
+                  if stamp is not None]
+        last = max(stamps) if stamps else None
+        analysis = " · ".join(note for note in
+                              (pace_note(pool) for pool in pools) if note)
+        subscriptions.append({
+            "name": name,
+            "label": str(sub_cfg.get("label") or name),
+            "account": mask_account(sub_cfg.get("account")),
+            "agent": str(sub_cfg.get("agent")
+                         or _last_agent(sub_samples) or "—"),
+            "host": str(sub_cfg.get("host") or "localhost"),
+            "last_sample_ts": last,
+            "last_sample_rel": relative_time(last, current_ts),
+            "stale": bool(last is not None
+                          and current_ts - last > 3 * interval),
+            "n_samples": int(meta.get("n_samples", len(sub_samples))),
+            "external_tokens": int(meta.get("external_tokens", 0) or 0),
+            "analysis": analysis,
+            "pools": pools,
+        })
+
+    all_stamps = [stamp for stamp in (_num(s.get("ts")) for s in samples)
+                  if stamp is not None]
+    _, overall_meta = _collect_pools(config, samples, None, window, clean_only)
+    return {
+        "ledger_path": str(ledger_path),
+        "ledger_exists": ledger_path.exists(),
+        "window_hours": window,
+        "clean_only": bool(clean_only),
+        "n_samples": int(overall_meta.get("n_samples", len(samples))),
+        "span_hours": float(overall_meta.get("span_hours", 0.0)),
+        "external_tokens": int(overall_meta.get("external_tokens", 0) or 0),
+        "last_sample_ts": max(all_stamps) if all_stamps else None,
+        "subscriptions": subscriptions,
+    }
+
+
+def _resolve_inputs(config: dict, ledger: str | Path | None,
+                    window_hours: float | None) -> tuple[Path, float, list[dict]]:
+    """collect_status / collect_subscriptions 共用的输入解析：路径、窗口、样本。"""
+    watch_cfg = config.get("watch") or {}
+    ledger_path = _resolve_path(ledger or watch_cfg.get("ledger"), DEFAULT_LEDGER)
+    window = DEFAULT_WINDOW_HOURS if window_hours is None else float(window_hours)
+    if window <= 0:
+        raise ValueError("--window-hours 必须为正数")
+    return ledger_path, window, load_samples(ledger_path)
+
+
+def _collect_pools(config: dict, samples: list[dict], subscription: str | None,
+                   window: float, clean_only: bool) -> tuple[list[dict], dict]:
+    """一组样本的池 dict 列表 + estimate ``_meta``（订阅粒度或全局）。"""
+    estimates = estimate_pools(samples, clean_only=clean_only,
+                               granularity_pct=_granularity(config, subscription))
+    meta = estimates.get("_meta") or {}
+    latest, previous = _pool_readings(samples)
+    seen = sorted(name for name in estimates if name != "_meta")
+    ordered = list(dict.fromkeys(
+        list(_configured_pools(config, subscription)) + seen))
+    rate_samples = ([s for s in samples if _is_clean(s)] if clean_only
+                    else samples) if samples else []
+    pools = [_collect_pool(name, estimates.get(name), latest.get(name),
+                           rate_samples, window,
+                           prev_pct=previous.get(name)) for name in ordered]
+    return pools, meta
+
+
 def _collect_pool(name: str, est: dict | None, current_pct: float | None,
-                  rate_samples: list[dict], window_hours: float) -> dict:
-    """单池的结构化结果：当前% / 已用 tokens / Q 区间 / 速率 / ETA / 对数与重置。"""
+                  rate_samples: list[dict], window_hours: float,
+                  prev_pct: float | None = None) -> dict:
+    """单池的结构化结果：当前% / 上读数% / 已用 tokens / Q 区间 / 速率 / ETA / 对数与重置。"""
     ratio = est.get("tokens_per_pct") if est else None
     rate = burn_rate(rate_samples, name, window_hours)
     eta = eta_hours(current_pct, ratio, rate) if rate is not None else None
@@ -88,6 +192,7 @@ def _collect_pool(name: str, est: dict | None, current_pct: float | None,
         "name": name,
         "has_samples": est is not None,
         "current_pct": current_pct,
+        "prev_pct": prev_pct,
         "used_tokens": (current_pct * ratio
                         if current_pct is not None and ratio is not None else None),
         "tokens_per_pct": ratio,
@@ -102,8 +207,86 @@ def _collect_pool(name: str, est: dict | None, current_pct: float | None,
     }
 
 
+def pool_window_hours(name: Any) -> float:
+    """从池名解析窗口小时数：'5h'→5、'7d'/'week'→168、'month'→720，解析不了按 24。"""
+    text = str(name or "").strip().lower()
+    match = _HOURS_RE.match(text)
+    if match:
+        return float(match.group(1))
+    match = _DAYS_RE.match(text)
+    if match:
+        return float(match.group(1)) * 24.0
+    return _NAMED_WINDOWS.get(text, DEFAULT_POOL_WINDOW_HOURS)
+
+
+def pace_note(pool: dict) -> str | None:
+    """单池节奏判断：eta < 窗口×0.5 → 「偏快」；eta > 窗口×2 → 「偏慢」；否则 None。"""
+    if not pool.get("has_samples"):
+        return None
+    eta = _num(pool.get("eta_hours"))
+    if eta is None:
+        return None
+    name = str(pool.get("name") or "?")
+    window = pool_window_hours(name)
+    if eta < window * 0.5:
+        return f"{name} 用量进度偏快"
+    if eta > window * 2:
+        return f"{name} 用量进度偏慢"
+    return None
+
+
+def relative_time(ts: float | None, now: float) -> str:
+    """中文相对时间：'刚刚' / 'N 分钟前' / 'N 小时前' / 'N 天前'；None → '无样本'。"""
+    stamp = _num(ts)
+    if stamp is None:
+        return "无样本"
+    delta = max(0.0, float(now) - stamp)
+    if delta < 60:
+        return "刚刚"
+    if delta < 3600:
+        return f"{int(delta // 60)} 分钟前"
+    if delta < 86400:
+        return f"{int(delta // 3600)} 小时前"
+    return f"{int(delta // 86400)} 天前"
+
+
+def mask_account(value: Any) -> str | None:
+    """账号掩码：'test@gmail.com' → 't***@g***.com'；已含 '*' 或为空时原样/None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "*" in text:
+        return text
+    if "@" in text:
+        user, _, domain = text.partition("@")
+        parts = domain.split(".")
+        masked_domain = (parts[0][:1] or "*") + "***"
+        if len(parts) > 1:
+            masked_domain += "." + ".".join(parts[1:])
+        return f"{user[:1] or '*'}***@{masked_domain}"
+    return text[:1] + "***"
+
+
+def _subscription_of(sample: Any) -> str:
+    """样本的订阅归属：``subscription`` 字段，缺失/空 → ``default``。"""
+    if not isinstance(sample, dict):
+        return DEFAULT_SUBSCRIPTION
+    value = sample.get("subscription")
+    text = str(value).strip() if value is not None else ""
+    return text or DEFAULT_SUBSCRIPTION
+
+
+def _last_agent(samples: list[dict]) -> str | None:
+    """该分组最新样本的 agent 名（未声明 [subscriptions.*].agent 时的兜底）。"""
+    for sample in reversed(samples):
+        agent = sample.get("agent")
+        if agent:
+            return str(agent)
+    return None
+
+
 def render_status(status: dict) -> str:
-    """把 ``collect_status`` 的结构化结果渲染成中文报告文本（不做 IO，便于单测）。"""
+    """把 ``collect_subscriptions`` 的结构化结果按订阅分组渲染成中文报告文本。"""
     lines = ["# AISUBench 持续监测状态", f"账本：{status['ledger_path']}"]
     if status["n_samples"] == 0:
         suffix = "" if status["ledger_exists"] else "（文件尚不存在）"
@@ -121,17 +304,31 @@ def render_status(status: dict) -> str:
         lines.append(f"- 提示：clean=False 区间累计约 {external:,} tokens 可能混入未观测渠道"
                      "（网页版、手机端等）；加 --clean-only 可将其排除出估计。")
 
-    pools = status["pools"]
-    if not pools:
+    subscriptions = status.get("subscriptions") or []
+    if not subscriptions:
         lines.append("")
         lines.append("样本里没有任何额度池，且配置 [subscriptions.*].pools 未声明池。")
         return "\n".join(lines)
 
-    rows = [_pool_row(pool) for pool in pools]
     header = ("池", "当前已用%", "已用≈tokens", f"100%当量Q(低–高)",
               f"速率(近{window_hours:g}h)", "预计耗尽", "备注")
-    lines.append("")
-    lines.extend(_render_table(header, rows))
+    for sub in subscriptions:
+        lines.append("")
+        label = str(sub.get("label") or sub["name"])
+        account = sub.get("account")
+        lines.append(f"## {label}" + (f"（{account}）" if account else ""))
+        source = (f"   来源：{sub.get('agent') or '—'} · {sub.get('host') or 'localhost'}"
+                  f"　最后采样：{sub.get('last_sample_rel') or '无样本'}")
+        if sub.get("stale"):
+            source += "（数据可能已过期）"
+        lines.append(source)
+        if sub.get("analysis"):
+            lines.append(f"   分析：{sub['analysis']}")
+        rows = [_pool_row(pool) for pool in sub.get("pools") or []]
+        if not rows:
+            lines.append("   该订阅暂无可展示的额度池。")
+            continue
+        lines.extend("   " + line for line in _render_table(header, rows))
     return "\n".join(lines)
 
 
@@ -163,9 +360,10 @@ def _pool_row(pool: dict) -> tuple[str, ...]:
             note)
 
 
-def _latest_pools(samples: list[dict]) -> dict[str, float]:
-    """各池最新一次的已用百分比（load_samples 已按 ts 升序，逐池覆盖取最后读数）。"""
+def _pool_readings(samples: list[dict]) -> tuple[dict[str, float], dict[str, float]]:
+    """各池 (最新读数, 上一次读数)——pct 回落即额度重置/恢复的信号。"""
     latest: dict[str, float] = {}
+    previous: dict[str, float] = {}
     for sample in samples:
         raw = sample.get("pools")
         if not isinstance(raw, dict):
@@ -173,27 +371,37 @@ def _latest_pools(samples: list[dict]) -> dict[str, float]:
         for name, value in raw.items():
             number = _num(value)
             if number is not None:
-                latest[str(name)] = number
-    return latest
+                key = str(name)
+                if key in latest:
+                    previous[key] = latest[key]
+                latest[key] = number
+    return latest, previous
 
 
-def _configured_pools(config: dict) -> list[str]:
-    """[subscriptions.*].pools 的并集，保持首次出现顺序。"""
+def _configured_pools(config: dict, subscription: str | None = None) -> list[str]:
+    """[subscriptions.*].pools：``subscription`` 为 None 时取全部订阅的并集。"""
+    subs = config.get("subscriptions") or {}
+    items = subs.items() if subscription is None else [(subscription, subs.get(subscription))]
     pools: list[str] = []
-    for subscription in (config.get("subscriptions") or {}).values():
-        if not isinstance(subscription, dict):
+    for _, sub in items:
+        if not isinstance(sub, dict):
             continue
-        declared = subscription.get("pools")
+        declared = sub.get("pools")
         if isinstance(declared, (list, tuple)):
             pools.extend(str(name) for name in declared)
     return list(dict.fromkeys(pools))
 
 
-def _granularity(config: dict) -> float:
+def _granularity(config: dict, subscription: str | None = None) -> float:
     """读数粒度 g：优先订阅级 granularity_pct，其次 [calibration]，默认 1.0。"""
-    for subscription in (config.get("subscriptions") or {}).values():
-        if isinstance(subscription, dict):
-            value = _num(subscription.get("granularity_pct"))
+    subs = config.get("subscriptions") or {}
+    if subscription is not None:
+        candidates = [subs.get(subscription)]
+    else:
+        candidates = list(subs.values())
+    for sub in candidates:
+        if isinstance(sub, dict):
+            value = _num(sub.get("granularity_pct"))
             if value is not None and value > 0:
                 return value
     value = _num((config.get("calibration") or {}).get("granularity_pct"))

@@ -142,13 +142,22 @@ class SessionSamplingTests(unittest.TestCase):
     def test_contract_fields(self):
         self.log.write_text(kimi_line(), encoding="utf-8")
         sample = self.sample(self.make_session(), now=1726000000.0)
-        self.assertEqual(set(sample), {"ts", "agent", "source", "usage", "pools", "clean"})
+        self.assertEqual(set(sample), {"ts", "agent", "subscription", "source",
+                                       "usage", "pools", "clean"})
         self.assertEqual(set(sample["usage"]), {"input", "cached", "output", "requests"})
         self.assertEqual(sample["source"], "watch")
         self.assertEqual(sample["agent"], "kimi-x")
+        # 未配置 [agents.X].subscription 时缺省为 agent 名本身
+        self.assertEqual(sample["subscription"], "kimi-x")
         self.assertEqual(sample["pools"], {"5h": 12.0, "week": 34.0})
         # 账本落盘内容与返回值一致
         self.assertEqual(load_samples(self.ledger), [sample])
+
+    def test_explicit_subscription_field(self):
+        session = self.make_session()
+        session.subscription = "demo"
+        sample = self.sample(session, now=1726000000.0)
+        self.assertEqual(sample["subscription"], "demo")
 
     def test_offset_persists_across_sessions_without_double_count(self):
         self.log.write_text(kimi_line(input_other=1, output=1, cache_read=0, cache_creation=0),
@@ -249,6 +258,7 @@ class RunWatchTests(unittest.TestCase):
         samples = load_samples(self.ledger)
         self.assertEqual(len(samples), 1)
         self.assertEqual(samples[0]["usage"], {"input": 5, "cached": 10, "output": 2, "requests": 1})
+        self.assertEqual(samples[0]["subscription"], "fake")  # 缺省为 agent 名
         with redirect_stdout(io.StringIO()):
             rc = run_watch("fake", "mock", once=True, ledger=self.ledger, config=self.config)
         self.assertEqual(rc, 0)
@@ -293,6 +303,18 @@ class RunWatchTests(unittest.TestCase):
                            config=self.config, sleep_fn=sleep_fn)
         self.assertEqual(rc, 0)
         self.assertIn("--once", err.getvalue())
+
+    def test_subscription_from_agent_config(self):
+        # [agents.X].subscription 写入样本的 subscription 字段
+        config = {"agents": {"fake": {"meter": "kimi", "log_path": str(self.log),
+                                     "subscription": "demo"}},
+                  "watch": {"offsets_file": str(self.root / "meter_offsets.json")}}
+        self.log.write_text(kimi_line(input_other=1, output=1), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            rc = run_watch("fake", "mock", once=True, ledger=self.ledger,
+                           config=config)
+        self.assertEqual(rc, 0)
+        self.assertEqual(load_samples(self.ledger)[0]["subscription"], "demo")
 
     def test_unknown_agent_raises(self):
         with self.assertRaises(ValueError), redirect_stdout(io.StringIO()):

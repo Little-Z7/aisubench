@@ -7,18 +7,31 @@ name = "AISUBench"
 
 [agents.mock]
 command = ["python3", "-m", "aisubench", "mock-agent"]
+# 该 agent 采样样本归属的订阅名（写入账本样本的 subscription 字段；
+# 缺省时样本归 agent 名本身；旧样本无该字段则归 default 分组）。
+subscription = "demo"
 
 [agents.api]
 command = ["python3", "-m", "aisubench", "api-agent"]
 
-# 示例订阅方案（合成数据，非真实价格）：
-# price 单位为元，window 是标定对应的额度窗口。
+# 示例订阅声明（合成数据，非真实信息）。监控面板/CLI status 按订阅分组展示：
+#   label           卡片显示名（缺省显示订阅名本身）
+#   account         掩码账号（可写已掩码形式如 t***@g***.com；写明文邮箱则自动掩码）
+#   agent / host    来源行显示的 agent 名与主机（host 缺省 localhost）
+#   probe           额度探针（mock / arkcli / manual，与 watch --probe 对应）
+#   pools           额度池声明（账本样本 pools 字段的键，见 ledger.py）
+#   granularity_pct 读数粒度 g：该订阅额度页最小可分辨的已用百分比刻度
+# price / window    评测折算用：价格（元）与标定对应的额度窗口
 [subscriptions.demo]
+label = "Max 20x"
+account = "t***@g***.com"
+agent = "mock"
+host = "localhost"
+probe = "mock"
+pools = ["5h", "week"]
+granularity_pct = 1.0
 price = 30.0
 window = "5h"
-# 示例：池结构声明——该订阅的额度池（账本样本 pools 字段的键，见 ledger.py）。
-# 评测真实订阅时请按额度页实际窗口改这里（合成示例，非真实结构）。
-pools = ["5h", "week"]
 
 # watch 持续监测的采样参数（账本契约与 clean 口径见 aisubench/watch.py、aisubench/ledger.py）。
 [watch]

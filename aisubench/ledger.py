@@ -2,7 +2,7 @@
 
 每行一个样本，契约与估计器已定死（另见 ``estimate.py`` 模块 docstring）::
 
-    {"ts": 1726000000.0, "agent": "kimi", "source": "watch",
+    {"ts": 1726000000.0, "agent": "kimi", "subscription": "demo", "source": "watch",
      "usage": {"input": 100, "cached": 900, "output": 50, "requests": 2},
      "pools": {"5h": 12.0, "week": 34.0},
      "clean": true}
@@ -10,7 +10,9 @@
 - ``usage`` 为自同 agent 上一个样本以来的 token 增量：``input`` 是非缓存输入、
   ``cached`` 是缓存命中、``requests`` 是请求条数；
 - ``pools`` 为采样时刻各额度池的已用百分比快照；
-- ``clean`` 表示该采样区间内消耗全部被 meter 观测到（口径见 ``watch`` docstring）。
+- ``clean`` 表示该采样区间内消耗全部被 meter 观测到（口径见 ``watch`` docstring）；
+- ``subscription`` 为样本归属的订阅名（``[agents.X].subscription``，缺省为 agent 名；
+  旧账本样本无该字段，读取侧归 ``default`` 分组）。
 
 默认路径 ``state/ledger.jsonl``；``state/`` 已被 git 忽略。本模块只做存储，
 不 import ``estimate``（估计器只读账本，两侧通过上述契约解耦）。
