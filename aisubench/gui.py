@@ -657,6 +657,206 @@ def _fmt_metric(value: float | None, fmt: str) -> str:
     return "不可用" if value is None else fmt.format(value)
 
 
+# 双主题（浅色默认 / 深色）共用片段：首屏防闪烁脚本、切换按钮、切换逻辑。
+# 与 dashboard.html 内联实现保持一致；localStorage key 相同，跨页共享选择。
+_THEME_BOOT = """<script>
+(function () {
+  try {
+    var t = localStorage.getItem("aisubench-theme");
+    document.documentElement.dataset.theme = t === "dark" ? "dark" : "light";
+  } catch (e) {
+    document.documentElement.dataset.theme = "light";
+  }
+})();
+</script>"""
+
+_THEME_BTN = """<button id="theme-btn" class="theme-btn" type="button"
+        title="切换浅色/深色主题" aria-label="切换主题">
+        <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>"""
+
+_THEME_JS = """<script>
+(function () {
+  var b = document.getElementById("theme-btn");
+  if (!b) return;
+  b.addEventListener("click", function () {
+    var root = document.documentElement;
+    var next = root.dataset.theme === "dark" ? "light" : "dark";
+    root.dataset.theme = next;
+    try { localStorage.setItem("aisubench-theme", next); } catch (e) {}
+  });
+})();
+</script>"""
+
+# /bench 页面样式：与 dashboard.html 同一套主题变量与组件语言
+# （浅色默认 CodexBar 式干净风；data-theme="dark" 为精修深色）。
+_BENCH_CSS = """
+:root {
+  --bg: #f5f6f8;
+  --bg-deco:
+    radial-gradient(55vw 40vw at 12% -10%, rgba(79, 110, 247, .05), transparent 62%),
+    radial-gradient(45vw 38vw at 92% 4%, rgba(14, 165, 164, .045), transparent 60%);
+  --card: rgba(255, 255, 255, .82);
+  --card-solid: #ffffff;
+  --inset: rgba(16, 24, 40, .035);
+  --border: #e5e7eb;
+  --border-soft: #eceef2;
+  --border-strong: #d5d9e0;
+  --fg: #1f2328;
+  --dim: #6b7280;
+  --dim2: #9aa1ad;
+  --accent: #4f6ef7;
+  --accent-ink: #3b5beb;
+  --accent-soft: rgba(79, 110, 247, .09);
+  --ok: #22c55e;   --ok-hi: #4ade80;
+  --warn: #f59e0b; --warn-hi: #fbbf24;
+  --bad: #ef4444;  --bad-hi: #f87171;
+  --ok-ink: #16a34a;   --ok-soft: rgba(34, 197, 94, .10);
+  --warn-ink: #b45309; --warn-soft: rgba(245, 158, 11, .10);
+  --bad-ink: #dc2626;  --bad-soft: rgba(239, 68, 68, .10);
+  --track: #e8eaee;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 8px 24px rgba(16, 24, 40, .06);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .07);
+  --btn-bg: #ffffff;
+}
+[data-theme="dark"] {
+  --bg: #0c1017;
+  --bg-deco:
+    radial-gradient(55vw 42vw at 10% -10%, rgba(80, 110, 220, .09), transparent 62%),
+    radial-gradient(48vw 40vw at 92% 8%, rgba(14, 165, 164, .06), transparent 60%);
+  --card: rgba(255, 255, 255, .05);
+  --card-solid: #151a23;
+  --inset: rgba(255, 255, 255, .04);
+  --border: rgba(255, 255, 255, .09);
+  --border-soft: rgba(255, 255, 255, .06);
+  --border-strong: rgba(255, 255, 255, .16);
+  --fg: #e7eaf0;
+  --dim: #8f98a8;
+  --dim2: #687182;
+  --accent: #7ea2ff;
+  --accent-ink: #93b1ff;
+  --accent-soft: rgba(126, 162, 255, .13);
+  --ok: #34d399;   --ok-hi: #6ee7b7;
+  --warn: #fbbf24; --warn-hi: #fcd34d;
+  --bad: #f87171;  --bad-hi: #fca5a5;
+  --ok-ink: #4ade80;   --ok-soft: rgba(52, 211, 153, .12);
+  --warn-ink: #fbbf24; --warn-soft: rgba(251, 191, 36, .12);
+  --bad-ink: #f87171;  --bad-soft: rgba(248, 113, 113, .12);
+  --track: rgba(255, 255, 255, .09);
+  --shadow: 0 8px 28px rgba(0, 0, 0, .35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+  --btn-bg: rgba(255, 255, 255, .07);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; color: var(--fg); min-height: 100vh;
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI",
+       "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--bg-deco);
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 48px; }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.h-title { flex: 1; min-width: 0; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+.sub { color: var(--dim); font-size: 12px; margin-top: 3px; }
+.h-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+a { color: var(--accent-ink); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a code { color: inherit; }
+button {
+  background: var(--btn-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px;
+  box-shadow: var(--shadow-sm);
+  transition: background .15s, border-color .15s, transform .15s;
+}
+button:hover:not(:disabled) {
+  border-color: var(--border-strong); transform: translateY(-1px);
+}
+.theme-btn {
+  width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--dim);
+}
+.theme-btn:hover:not(:disabled) { color: var(--fg); }
+.theme-btn svg { width: 15px; height: 15px; }
+.theme-btn .ic-sun { display: none; }
+[data-theme="dark"] .theme-btn .ic-sun { display: block; }
+[data-theme="dark"] .theme-btn .ic-moon { display: none; }
+.glass {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+}
+#bench-summary { margin: 16px 0; padding: 20px 22px; font-size: 13px; }
+#bench-detail { padding: 20px 22px; }
+#bench-detail h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+.stats { display: flex; gap: 32px; flex-wrap: wrap; }
+.stat .v {
+  font-size: 26px; font-weight: 600; letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;
+}
+.stat .v.na { color: var(--dim2); font-size: 17px; font-weight: 500; }
+.stat .k { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
+.meta-line { color: var(--dim); margin-top: 8px; }
+.meta-line code, .empty code, .sub code {
+  color: var(--accent-ink); background: var(--accent-soft);
+  padding: 1px 6px; border-radius: 6px; font-size: 12.5px;
+}
+.pass-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.pass-k { flex: none; color: var(--dim); font-size: 12px; }
+.pass-v { flex: none; font-variant-numeric: tabular-nums; font-weight: 600; }
+.p-bar {
+  flex: 1; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--track);
+}
+.p-fill {
+  height: 100%; border-radius: 3px; transition: width .4s;
+  background: linear-gradient(90deg, var(--ok), var(--ok-hi));
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 10px; text-align: left; }
+th {
+  color: var(--dim); font-size: 11.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid var(--border);
+}
+tbody tr + tr td { border-top: 1px solid var(--border-soft); }
+td { font-variant-numeric: tabular-nums; }
+td.num { text-align: right; }
+.tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px;
+  border: 1px solid transparent;
+}
+.tag.ok { color: var(--ok-ink); border-color: var(--ok-soft); background: var(--ok-soft); }
+.tag.bad { color: var(--bad-ink); border-color: var(--bad-soft); background: var(--bad-soft); }
+.empty {
+  margin-top: 16px; padding: 32px; text-align: center; color: var(--dim);
+  border: 1px dashed var(--border-strong); border-radius: 14px;
+  background: var(--card);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+@media (max-width: 640px) { .stats { gap: 20px; } }
+"""
+
+
 def _bench_page(state: GuiState, query: dict[str, list[str]]) -> bytes:
     """服务端渲染 /bench 任务评测页：与 CLI report 完全同口径的汇总 + 明细。
 
@@ -751,117 +951,29 @@ def _bench_page(state: GuiState, query: dict[str, list[str]]) -> bytes:
       </section>"""
 
     page = f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{_THEME_BOOT}
 <title>AISUBench 任务评测</title>
-<style>
-:root {{
-  --bg: #0a0e1a;
-  --fg: #e8edf6; --dim: #93a0b4; --dim2: #6b7890;
-  --accent: #6ea8ff; --accent2: #a78bfa;
-  --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
-  --glass: rgba(255, 255, 255, .055);
-  --glass-border: rgba(255, 255, 255, .11);
-  --glass-shadow: 0 10px 34px rgba(2, 6, 18, .45);
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0; color: var(--fg); min-height: 100vh;
-  font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: var(--bg);
-}}
-body::before {{
-  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background:
-    radial-gradient(52vw 52vw at 12% -6%, rgba(56, 89, 199, .34), transparent 62%),
-    radial-gradient(46vw 46vw at 88% 18%, rgba(124, 78, 189, .28), transparent 60%),
-    radial-gradient(58vw 58vw at 55% 105%, rgba(23, 116, 128, .30), transparent 64%),
-    var(--bg);
-}}
-.wrap {{ max-width: 1080px; margin: 0 auto; padding: 22px 18px 40px; }}
-header {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
-h1 {{
-  font-size: 21px; margin: 0; font-weight: 650; letter-spacing: .01em;
-  background: linear-gradient(92deg, #eaf0ff, #b9c8ff 60%, #a78bfa);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}}
-.sub {{ color: var(--dim); font-size: 12px; margin-top: 3px; }}
-a {{ color: var(--accent); text-decoration: none; }}
-a:hover {{ text-decoration: underline; }}
-.glass {{
-  background: var(--glass);
-  border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
-  box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
-}}
-#bench-summary {{ margin: 14px 0 16px; padding: 16px 18px; font-size: 13px; }}
-#bench-detail {{ padding: 16px 18px; }}
-#bench-detail h2 {{ font-size: 15px; margin: 0 0 10px; font-weight: 600; }}
-.stats {{ display: flex; gap: 26px; flex-wrap: wrap; }}
-.stat .v {{
-  font-size: 21px; font-weight: 650; letter-spacing: .01em;
-  font-variant-numeric: tabular-nums;
-}}
-.stat .v.na {{ color: var(--dim2); font-size: 17px; font-weight: 500; }}
-.stat .k {{ color: var(--dim); font-size: 11.5px; margin-top: 1px; }}
-.meta-line {{ color: var(--dim); margin-top: 8px; }}
-.meta-line code, .empty code {{
-  color: var(--accent); background: rgba(255, 255, 255, .08);
-  padding: 1px 6px; border-radius: 6px; font-size: 12.5px;
-}}
-.pass-row {{ display: flex; align-items: center; gap: 10px; margin-top: 14px; }}
-.pass-k {{ flex: none; color: var(--dim); font-size: 12px; }}
-.pass-v {{ flex: none; font-variant-numeric: tabular-nums; font-weight: 600; }}
-.p-bar {{
-  flex: 1; height: 7px; border-radius: 4px; overflow: hidden;
-  background: rgba(255, 255, 255, .08);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3);
-}}
-.p-fill {{
-  height: 100%; border-radius: 4px; transition: width .4s;
-  background: linear-gradient(90deg, #34d399, #6ee7b7);
-  box-shadow: 0 0 8px rgba(52, 211, 153, .55);
-}}
-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-th, td {{ padding: 7px 10px; text-align: left; }}
-th {{
-  color: var(--dim); font-size: 11.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .05em;
-  border-bottom: 1px solid var(--glass-border);
-}}
-tbody tr + tr td {{ border-top: 1px solid rgba(255, 255, 255, .07); }}
-td {{ font-variant-numeric: tabular-nums; }}
-td.num {{ text-align: right; }}
-.tag {{
-  display: inline-block; padding: 0 8px; border-radius: 9px; font-size: 11.5px;
-  border: 1px solid transparent;
-}}
-.tag.ok {{ color: var(--ok); border-color: rgba(52, 211, 153, .5); background: rgba(52, 211, 153, .1); }}
-.tag.bad {{ color: var(--bad); border-color: rgba(248, 113, 113, .5); background: rgba(248, 113, 113, .1); }}
-.empty {{
-  margin-top: 14px; padding: 30px; text-align: center; color: var(--dim);
-  border: 1px dashed rgba(255, 255, 255, .18); border-radius: 18px;
-  background: var(--glass);
-  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
-}}
-@media (max-width: 640px) {{ .stats {{ gap: 18px; }} }}
-</style>
+<style>{_BENCH_CSS}</style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div>
+    <div class="h-title">
       <h1>任务评测</h1>
       <div class="sub">runs 目录：{_esc(state.runs_dir)} · 与 <code>aisubench report</code> 同口径</div>
     </div>
-    <a href="/">← 返回监控面板</a>
+    <div class="h-actions">
+      <a href="/">← 返回监控面板</a>
+      {_THEME_BTN}
+    </div>
   </header>
   {content}
 </div>
+{_THEME_JS}
 </body>
 </html>
 """
